@@ -17,6 +17,7 @@ public class GeoMonitor: NSObject, ObservableObject {
     static var currentLocationRegionMaximumRadius: CLLocationDistance = 2_500
     static var currentLocationRegionRadiusDelta: CLLocationDistance   = 2_000
     #endif
+    static var maximumDistanceToRegionCenter: CLLocationDistance   = 25_000
   }
   
   public enum FetchTrigger: String {
@@ -200,6 +201,11 @@ public class GeoMonitor: NSObject, ObservableObject {
     locationManager.stopMonitoringVisits()
   }
   
+  public func update(regions: [CLCircularRegion]) async {
+    let location = try? await fetchCurrentLocation()
+    monitor(regions, location: location)
+  }
+  
   private func fetchCurrentLocation() async throws -> CLLocation {
     if let existing = withNextLocation {
       assertionFailure()
@@ -232,7 +238,7 @@ extension GeoMonitor {
 
     // Ask to fetch data and wait for this to complete
     let regions = await fetchSource.fetchRegions(trigger: trigger)
-    self.monitor(regions, location: location)
+    monitor(regions, location: location)
   }
 
   func monitorCurrentArea() async throws -> CLLocation {
@@ -281,25 +287,47 @@ extension GeoMonitor {
 extension GeoMonitor {
   
   func monitor(_ regions: [CLCircularRegion], location: CLLocation?) {
-    regionsToMonitor = regions
-    
-    let limit = maxRegionsToMonitor - 1 // we also monitor the current location
-    if regions.count <= limit {
-      regions.forEach(locationManager.startMonitoring(for:))
-    
+    let nearby: [CLCircularRegion]
+    if let currentLocation = location {
+      nearby = regions.filter { region in
+        let distance = currentLocation.distance(from: .init(latitude: region.center.latitude, longitude: region.center.longitude))
+        return distance < Constants.maximumDistanceToRegionCenter
+      }
     } else {
-      if let currentLocation = location {
-        let nearest = regions.sorted { lhs, rhs in
-          let leftDistance = currentLocation.distance(from: .init(latitude: lhs.center.latitude, longitude: lhs.center.longitude))
-          let rightDistance = currentLocation.distance(from: .init(latitude: rhs.center.latitude, longitude: rhs.center.longitude))
-          return leftDistance < rightDistance
-        }.prefix(limit)
-        nearest.forEach(locationManager.startMonitoring(for:))
-      
-      } else {
-        regions.prefix(limit).forEach(locationManager.startMonitoring(for:))
+      nearby = regions
+    }
+    
+    regionsToMonitor = nearby
+    
+    // Stop monitoring regions that are no irrelevant
+    let toBeMonitored = Set(nearby.map(\.identifier))
+    for previous in locationManager.monitoredRegions {
+      if !toBeMonitored.contains(previous.identifier) && previous.identifier != "current-location" {
+        locationManager.stopMonitoring(for: previous)
       }
     }
+    
+    // New regions to monitor
+    let monitoredAlready = locationManager.monitoredRegions.map(\.identifier) // includes current-location
+    let toMonitor = nearby.filter { !monitoredAlready.contains($0.identifier) }
+    let monitoredCount = monitoredAlready.count + toMonitor.count
+    
+    // Optionally sort, if we're above the limit
+    let sorted: [CLCircularRegion]
+    if let currentLocation = location, monitoredCount > maxRegionsToMonitor {
+      sorted = toMonitor.sorted { lhs, rhs in
+        let leftDistance = currentLocation.distance(from: .init(latitude: lhs.center.latitude, longitude: lhs.center.longitude))
+        let rightDistance = currentLocation.distance(from: .init(latitude: rhs.center.latitude, longitude: rhs.center.longitude))
+        return leftDistance < rightDistance
+      }
+    } else {
+      sorted = toMonitor
+    }
+    
+    // Now monitor
+    sorted
+      .prefix(maxRegionsToMonitor - 1) // deduct current-location
+      .forEach(locationManager.startMonitoring(for:))
   }
   
 }
@@ -313,18 +341,21 @@ extension GeoMonitor: CLLocationManagerDelegate {
       return // Ignore re-entering current region; we only care about exiting this
     }
 
-#if DEBUG
-    eventHandler(.debug("GeoMonitor entered -> \(region)", .enteredRegion))
-#endif
-    
     Task {
       // Make sure this is still a *current* region => update data
       await runUpdateCycle(trigger: .regionMonitoring)
       
       // Now we can check
       guard let match = regionsToMonitor.first(where: { $0.identifier == region.identifier }) else {
+#if DEBUG
+        eventHandler(.debug("GeoMonitor entered outdated region -> \(region)", .enteredRegion))
+#endif
         return // Has since disappeared
       }
+      
+#if DEBUG
+      eventHandler(.debug("GeoMonitor entered -> \(region)", .enteredRegion))
+#endif
       
       let location = try? await fetchCurrentLocation()
       eventHandler(.entered(match, location))
@@ -394,7 +425,7 @@ extension GeoMonitor: CLLocationManagerDelegate {
   
   public func locationManager(_ manager: CLLocationManager, didFailWithError error: Error) {
 #if DEBUG
-    eventHandler(.debug("GeoMonitor failed -> \(error)", .failure))
+    eventHandler(.debug("GeoMonitor failed -> \(error) -- \(error.localizedDescription)", .failure))
     print("GeoMonitor's location manager failed: \(error)")
 #endif
     
