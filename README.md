@@ -11,7 +11,10 @@ Relies on a mixture of techniques, such as:
 
 ## Setup
 
-TODO:
+1. Configure your *Target*:
+  - Go to *Signing & Capabilities*, *Background Modes* and make sure *Location updates* is ticket.
+  - Go to *Info*, and make sure you have usage descriptions for "Privacy - Location Always", "Privacy - Location Always and When in Use", and "Privacy - Location When In Use" set.
+
 
 ## Usage
 

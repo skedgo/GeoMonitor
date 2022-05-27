@@ -28,6 +28,8 @@ public class GeoMonitor: NSObject, ObservableObject {
   }
   
   public enum LocationFetchError: Error {
+    case accessNotProvided
+    
     /// Happens if you stop monitoring before a location could be found
     case noLocationFetchedInTime
     
@@ -59,6 +61,10 @@ public class GeoMonitor: NSObject, ObservableObject {
   
   public var maxRegionsToMonitor = 20
 
+  /// Instantiates new monitor
+  /// - Parameters:
+  ///   - fetch: Handler that's called when the monitor decides it's a good time to update the regions to monitor. Should fetch and then return all regions to be monitored (even if they didn't change).
+  ///   - onEvent: Handler that's called when a relevant event is happening, including when one of the monitored regions is entered.
   public convenience init(fetch: @escaping (GeoMonitor.FetchTrigger) async -> [CLCircularRegion], onEvent: @escaping (Event) -> Void) {
     self.init(dataSource: SimpleDataSource(handler: fetch), onEvent: onEvent)
   }
@@ -156,7 +162,7 @@ public class GeoMonitor: NSObject, ObservableObject {
 
   private var isMonitoring: Bool = false
   
-  private var withNextLocation: ((Result<CLLocation, Error>) -> Void)? = nil
+  private var withNextLocation: [(Result<CLLocation, Error>) -> Void] = []
   
   private var currentLocationRegion: CLRegion? = nil
   
@@ -173,7 +179,7 @@ public class GeoMonitor: NSObject, ObservableObject {
   }
   
   public func startMonitoring() {
-    guard !isMonitoring else { return }
+    guard !isMonitoring, hasAccess else { return }
     
     isMonitoring = true
     locationManager.allowsBackgroundLocationUpdates = true
@@ -207,21 +213,19 @@ public class GeoMonitor: NSObject, ObservableObject {
   }
   
   private func fetchCurrentLocation() async throws -> CLLocation {
-    if let existing = withNextLocation {
-      assertionFailure()
-      existing(.failure(LocationFetchError.noLocationFetchedInTime))
-      withNextLocation = nil
+    guard hasAccess else {
+      throw LocationFetchError.accessNotProvided
     }
-
+    
     let originalAccuracy = locationManager.desiredAccuracy
     locationManager.desiredAccuracy = kCLLocationAccuracyHundredMeters
     locationManager.requestLocation()
     
     return try await withCheckedThrowingContinuation { continuation in
-      withNextLocation = { [unowned self] result in
+      withNextLocation.append({ [unowned self] result in
         self.locationManager.desiredAccuracy = originalAccuracy
         continuation.resume(with: result)
-      }
+      })
     }
   }
 }
@@ -276,8 +280,10 @@ extension GeoMonitor {
   }
   
   func stopMonitoringCurrentArea() {
-    withNextLocation?(.failure(LocationFetchError.noLocationFetchedInTime))
-    withNextLocation = nil
+    withNextLocation.forEach {
+      $0(.failure(LocationFetchError.noLocationFetchedInTime))
+    }
+    withNextLocation = []
     currentLocationRegion = nil
   }
 }
@@ -400,15 +406,19 @@ extension GeoMonitor: CLLocationManagerDelegate {
       .filter({ $0.horizontalAccuracy <= manager.desiredAccuracy })
       .last
     else {
-      withNextLocation?(.failure(LocationFetchError.locationInaccurate(latest)))
-      withNextLocation = nil
+      withNextLocation.forEach {
+        $0(.failure(LocationFetchError.locationInaccurate(latest)))
+      }
+      withNextLocation = []
       return
     }
 
     self.currentLocation = latestAccurate
     
-    withNextLocation?(.success(latestAccurate))
-    withNextLocation = nil
+    withNextLocation.forEach {
+      $0(.success(latestAccurate))
+    }
+    withNextLocation = []
   }
   
   public func locationManagerDidPauseLocationUpdates(_ manager: CLLocationManager) {
@@ -429,8 +439,10 @@ extension GeoMonitor: CLLocationManagerDelegate {
     print("GeoMonitor's location manager failed: \(error)")
 #endif
     
-    withNextLocation?(.failure(error))
-    withNextLocation = nil
+    withNextLocation.forEach {
+      $0(.failure(error))
+    }
+    withNextLocation = []
   }
   
   public func locationManagerDidChangeAuthorization(_ manager: CLLocationManager) {
