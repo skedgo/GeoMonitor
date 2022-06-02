@@ -143,7 +143,43 @@ public class GeoMonitor: NSObject, ObservableObject {
       }
     }
   }
+  
+  // MARK: - Location fetching
 
+  private var withNextLocation: [(Result<CLLocation, Error>) -> Void] = []
+  
+  private var fetchTimer: Timer?
+  
+  private func fetchCurrentLocation() async throws -> CLLocation {
+    guard hasAccess else {
+      throw LocationFetchError.accessNotProvided
+    }
+    
+    let originalAccuracy = locationManager.desiredAccuracy
+    locationManager.desiredAccuracy = kCLLocationAccuracyHundredMeters
+    locationManager.requestLocation()
+    
+    fetchTimer = .scheduledTimer(withTimeInterval: 30, repeats: false) { [unowned self] _ in
+      self.notify(.failure(LocationFetchError.noLocationFetchedInTime))
+    }
+    
+    return try await withCheckedThrowingContinuation { continuation in
+      withNextLocation.append({ [unowned self] result in
+        self.locationManager.desiredAccuracy = originalAccuracy
+        continuation.resume(with: result)
+      })
+    }
+  }
+  
+  private func notify(_ result: Result<CLLocation, Error>) {
+    fetchTimer?.invalidate()
+    fetchTimer = nil
+    
+    withNextLocation.forEach {
+      $0(result)
+    }
+    withNextLocation = []
+  }
   
   // MARK: - Current region monitoring
   
@@ -161,8 +197,6 @@ public class GeoMonitor: NSObject, ObservableObject {
   private var regionsToMonitor: [CLCircularRegion] = []
 
   private var isMonitoring: Bool = false
-  
-  private var withNextLocation: [(Result<CLLocation, Error>) -> Void] = []
   
   private var currentLocationRegion: CLRegion? = nil
   
@@ -211,23 +245,7 @@ public class GeoMonitor: NSObject, ObservableObject {
     let location = try? await fetchCurrentLocation()
     monitor(regions, location: location)
   }
-  
-  private func fetchCurrentLocation() async throws -> CLLocation {
-    guard hasAccess else {
-      throw LocationFetchError.accessNotProvided
-    }
-    
-    let originalAccuracy = locationManager.desiredAccuracy
-    locationManager.desiredAccuracy = kCLLocationAccuracyHundredMeters
-    locationManager.requestLocation()
-    
-    return try await withCheckedThrowingContinuation { continuation in
-      withNextLocation.append({ [unowned self] result in
-        self.locationManager.desiredAccuracy = originalAccuracy
-        continuation.resume(with: result)
-      })
-    }
-  }
+ 
 }
 
 // MARK: - Trigger on move
@@ -280,10 +298,7 @@ extension GeoMonitor {
   }
   
   func stopMonitoringCurrentArea() {
-    withNextLocation.forEach {
-      $0(.failure(LocationFetchError.noLocationFetchedInTime))
-    }
-    withNextLocation = []
+    notify(.failure(LocationFetchError.noLocationFetchedInTime))
     currentLocationRegion = nil
   }
 }
@@ -363,8 +378,15 @@ extension GeoMonitor: CLLocationManagerDelegate {
       eventHandler(.debug("GeoMonitor entered -> \(region)", .enteredRegion))
 #endif
       
-      let location = try? await fetchCurrentLocation()
-      eventHandler(.entered(match, location))
+      do {
+        let location = try await fetchCurrentLocation()
+        eventHandler(.entered(match, location))
+      } catch {
+#if DEBUG
+        eventHandler(.debug("GeoMonitor location fetch failed after entering region -> \(error)", .failure))
+#endif
+        eventHandler(.entered(match, nil))
+      }
     }
   }
   
@@ -406,19 +428,13 @@ extension GeoMonitor: CLLocationManagerDelegate {
       .filter({ $0.horizontalAccuracy <= manager.desiredAccuracy })
       .last
     else {
-      withNextLocation.forEach {
-        $0(.failure(LocationFetchError.locationInaccurate(latest)))
-      }
-      withNextLocation = []
+      notify(.failure(LocationFetchError.locationInaccurate(latest)))
       return
     }
 
     self.currentLocation = latestAccurate
     
-    withNextLocation.forEach {
-      $0(.success(latestAccurate))
-    }
-    withNextLocation = []
+    notify(.success(latestAccurate))
   }
   
   public func locationManagerDidPauseLocationUpdates(_ manager: CLLocationManager) {
@@ -439,10 +455,7 @@ extension GeoMonitor: CLLocationManagerDelegate {
     print("GeoMonitor's location manager failed: \(error)")
 #endif
     
-    withNextLocation.forEach {
-      $0(.failure(error))
-    }
-    withNextLocation = []
+    notify(.failure(error))
   }
   
   public func locationManagerDidChangeAuthorization(_ manager: CLLocationManager) {
