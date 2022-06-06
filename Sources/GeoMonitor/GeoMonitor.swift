@@ -44,7 +44,6 @@ public class GeoMonitor: NSObject, ObservableObject {
     case updatedCurrentLocationRegion
     case enteredRegion
     case visitMonitoring
-    case currentLocationFetch
     case stateChange
     case failure
   }
@@ -163,9 +162,6 @@ public class GeoMonitor: NSObject, ObservableObject {
         currentLocation.timestamp.timeIntervalSinceNow > Constants.currentLocationFetchRecency * -1,
         currentLocation.horizontalAccuracy <= desiredAccuracy {
       // We have a current location and it's less than 10 seconds old. Just use it
-      #if DEBUG
-      eventHandler(.debug("GeoMonitor already has up-to-date current location.", .currentLocationFetch))
-      #endif
       return currentLocation
     }
     
