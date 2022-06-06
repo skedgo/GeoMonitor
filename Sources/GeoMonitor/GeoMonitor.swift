@@ -18,6 +18,8 @@ public class GeoMonitor: NSObject, ObservableObject {
     static var currentLocationRegionRadiusDelta: CLLocationDistance   = 2_000
     #endif
     static var maximumDistanceToRegionCenter: CLLocationDistance   = 25_000
+    static var currentLocationFetchTimeOut: TimeInterval = 30
+    static var currentLocationFetchRecency: TimeInterval = 10
   }
   
   public enum FetchTrigger: String {
@@ -42,6 +44,7 @@ public class GeoMonitor: NSObject, ObservableObject {
     case updatedCurrentLocationRegion
     case enteredRegion
     case visitMonitoring
+    case currentLocationFetch
     case stateChange
     case failure
   }
@@ -155,11 +158,22 @@ public class GeoMonitor: NSObject, ObservableObject {
       throw LocationFetchError.accessNotProvided
     }
     
+    let desiredAccuracy = kCLLocationAccuracyHundredMeters
+    if let currentLocation = currentLocation,
+        currentLocation.timestamp.timeIntervalSinceNow > Constants.currentLocationFetchRecency * -1,
+        currentLocation.horizontalAccuracy <= desiredAccuracy {
+      // We have a current location and it's less than 10 seconds old. Just use it
+      #if DEBUG
+      eventHandler(.debug("GeoMonitor already has up-to-date current location.", .currentLocationFetch))
+      #endif
+      return currentLocation
+    }
+    
     let originalAccuracy = locationManager.desiredAccuracy
-    locationManager.desiredAccuracy = kCLLocationAccuracyHundredMeters
+    locationManager.desiredAccuracy = desiredAccuracy
     locationManager.requestLocation()
     
-    fetchTimer = .scheduledTimer(withTimeInterval: 30, repeats: false) { [unowned self] _ in
+    fetchTimer = .scheduledTimer(withTimeInterval: Constants.currentLocationFetchTimeOut, repeats: false) { [unowned self] _ in
       self.notify(.failure(LocationFetchError.noLocationFetchedInTime))
     }
     
