@@ -61,21 +61,35 @@ public class GeoMonitor: NSObject, ObservableObject {
   
   private let locationManager: CLLocationManager
   
+  private let enabledKey: String?
+
   public var maxRegionsToMonitor = 20
 
   /// Instantiates new monitor
   /// - Parameters:
+  ///   - enabledKey: User defaults key to use store whether background tracking should be enabled
   ///   - fetch: Handler that's called when the monitor decides it's a good time to update the regions to monitor. Should fetch and then return all regions to be monitored (even if they didn't change).
   ///   - onEvent: Handler that's called when a relevant event is happening, including when one of the monitored regions is entered.
-  public convenience init(fetch: @escaping (GeoMonitor.FetchTrigger) async -> [CLCircularRegion], onEvent: @escaping (Event) -> Void) {
-    self.init(dataSource: SimpleDataSource(handler: fetch), onEvent: onEvent)
+  public convenience init(enabledKey: String? = nil, fetch: @escaping (GeoMonitor.FetchTrigger) async -> [CLCircularRegion], onEvent: @escaping (Event) -> Void) {
+    self.init(enabledKey: enabledKey, dataSource: SimpleDataSource(handler: fetch), onEvent: onEvent)
   }
   
-  public init(dataSource: GeoMonitorDataSource, onEvent: @escaping (Event) -> Void) {
+  /// Instantiates new monitor
+  /// - Parameters:
+  ///   - enabledKey: User defaults key to use store whether background tracking should be enabled
+  ///   - dataSource: Data source that provides regions. Will be maintained strongly.
+  ///   - onEvent: Handler that's called when a relevant event is happening, including when one of the monitored regions is entered.
+  public init(enabledKey: String? = nil, dataSource: GeoMonitorDataSource, onEvent: @escaping (Event) -> Void) {
     fetchSource = dataSource
     eventHandler = onEvent
     locationManager = .init()
     hasAccess = false
+    self.enabledKey = enabledKey
+    if let enabledKey = enabledKey {
+      enableInBackground = UserDefaults.standard.bool(forKey: enabledKey)
+    } else {
+      enableInBackground = false
+    }
     
     super.init()
     
@@ -88,10 +102,12 @@ public class GeoMonitor: NSObject, ObservableObject {
   
   // MARK: - Access
   
+  /// Whether user has granted any kind of access to the device's location
   @Published public var hasAccess: Bool
   
   private var askHandler: (Bool) -> Void = { _ in }
 
+  /// Whether it's possible to bring up the system prompt to ask for access to the device's location
   public var canAsk: Bool {
     switch locationManager.authorizationStatus {
     case .notDetermined:
@@ -107,7 +123,9 @@ public class GeoMonitor: NSObject, ObservableObject {
     switch locationManager.authorizationStatus {
     case .authorizedAlways:
       hasAccess = true
-      enableInBackground = true
+      // Note: We do NOT update `enableInBackground` here, as that's the user's
+      // setting, i.e., they might not want to have it enabled even though the
+      // app has permissions.
     case .authorizedWhenInUse:
       hasAccess = true
       enableInBackground = false
@@ -121,10 +139,23 @@ public class GeoMonitor: NSObject, ObservableObject {
   }
   
   public func ask(forBackground: Bool = false, _ handler: @escaping (Bool) -> Void = { _ in }) {
-    self.askHandler = handler
     if forBackground {
-      locationManager.requestAlwaysAuthorization()
+      if locationManager.authorizationStatus == .notDetermined {
+        // Need to *first* ask for when in use, and only for always if that
+        // is granted.
+        ask(forBackground: false) { success in
+          if success {
+            self.ask(forBackground: true, handler)
+          } else {
+            handler(false)
+          }
+        }
+      } else {
+        self.askHandler = handler
+        locationManager.requestAlwaysAuthorization()
+      }
     } else {
+      self.askHandler = handler
       locationManager.requestWhenInUseAuthorization()
     }
   }
@@ -193,13 +224,17 @@ public class GeoMonitor: NSObject, ObservableObject {
   
   // MARK: - Current region monitoring
   
+  /// Whether background monitoring is currently enabled
   @Published public var enableInBackground: Bool = false {
     didSet {
       guard enableInBackground != oldValue else { return }
       if enableInBackground, (locationManager.authorizationStatus == .notDetermined || locationManager.authorizationStatus == .authorizedWhenInUse) {
         ask(forBackground: true)
-      } else {
+      } else if enableInBackground {
         updateAccess()
+      }
+      if let enabledKey = enabledKey {
+        UserDefaults.standard.set(enableInBackground, forKey: enabledKey)
       }
     }
   }
