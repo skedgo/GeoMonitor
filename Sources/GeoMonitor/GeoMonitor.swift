@@ -10,13 +10,8 @@ public protocol GeoMonitorDataSource {
 
 public class GeoMonitor: NSObject, ObservableObject {
   enum Constants {
-    #if DEBUG
-    static var currentLocationRegionMaximumRadius: CLLocationDistance = 400
-    static var currentLocationRegionRadiusDelta: CLLocationDistance   = 350
-    #else
     static var currentLocationRegionMaximumRadius: CLLocationDistance = 2_500
     static var currentLocationRegionRadiusDelta: CLLocationDistance   = 2_000
-    #endif
     static var maximumDistanceToRegionCenter: CLLocationDistance   = 25_000
     static var currentLocationFetchTimeOut: TimeInterval = 30
     static var currentLocationFetchRecency: TimeInterval = 10
