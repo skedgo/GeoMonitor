@@ -360,34 +360,36 @@ extension GeoMonitor {
     
     regionsToMonitor = nearby
     
+    
+    // The ones to monitor, optionally pruned by the nearest
+    let toMonitor: [CLCircularRegion]
+    let maxCount = maxRegionsToMonitor - 1 // keep one for current location
+    if let currentLocation = location, nearby.count > maxCount {
+      let prefix = nearby
+        .sorted { lhs, rhs in
+          let leftDistance = currentLocation.distance(from: .init(latitude: lhs.center.latitude, longitude: lhs.center.longitude))
+          let rightDistance = currentLocation.distance(from: .init(latitude: rhs.center.latitude, longitude: rhs.center.longitude))
+          return leftDistance < rightDistance
+        }
+        .prefix(maxCount)
+      toMonitor = Array(prefix)
+    } else {
+      toMonitor = nearby
+    }
+    
     // Stop monitoring regions that are no irrelevant
-    let toBeMonitored = Set(nearby.map(\.identifier))
+    let toMonitorIDs = Set(toMonitor.map(\.identifier))
     for previous in locationManager.monitoredRegions {
-      if !toBeMonitored.contains(previous.identifier) && previous.identifier != "current-location" {
+      if !toMonitorIDs.contains(previous.identifier) && previous.identifier != "current-location" {
         locationManager.stopMonitoring(for: previous)
       }
     }
     
-    // New regions to monitor
-    let monitoredAlready = locationManager.monitoredRegions.map(\.identifier) // includes current-location
-    let toMonitor = nearby.filter { !monitoredAlready.contains($0.identifier) }
-    let monitoredCount = monitoredAlready.count + toMonitor.count
-    
-    // Optionally sort, if we're above the limit
-    let sorted: [CLCircularRegion]
-    if let currentLocation = location, monitoredCount > maxRegionsToMonitor {
-      sorted = toMonitor.sorted { lhs, rhs in
-        let leftDistance = currentLocation.distance(from: .init(latitude: lhs.center.latitude, longitude: lhs.center.longitude))
-        let rightDistance = currentLocation.distance(from: .init(latitude: rhs.center.latitude, longitude: rhs.center.longitude))
-        return leftDistance < rightDistance
-      }
-    } else {
-      sorted = toMonitor
-    }
-    
-    // Now monitor
-    sorted
-      .prefix(maxRegionsToMonitor - 1) // deduct current-location
+    // Start monitoring those we need to monitor
+    let monitoredAlready = locationManager.monitoredRegions.map(\.identifier)
+    let newRegion = toMonitor
+      .filter { !monitoredAlready.contains($0.identifier) }
+    newRegion
       .forEach(locationManager.startMonitoring(for:))
   }
   
