@@ -18,6 +18,7 @@ public class GeoMonitor: NSObject, ObservableObject {
   }
   
   public enum FetchTrigger: String {
+    case manual
     case initial
     case visitMonitoring
     case regionMonitoring
@@ -49,6 +50,7 @@ public class GeoMonitor: NSObject, ObservableObject {
     case debug(String, DebugKind)
 #endif
     case entered(CLCircularRegion, CLLocation?)
+    case manual(CLCircularRegion, CLLocation?)
   }
   
   private let fetchSource: GeoMonitorDataSource
@@ -285,6 +287,19 @@ public class GeoMonitor: NSObject, ObservableObject {
     let location = try? await fetchCurrentLocation()
     monitor(regions, location: location)
   }
+  
+  public func checkIfInRegion() async {
+    guard let location = await runUpdateCycle(trigger: .manual) else { return }
+    
+    let candidates = regionsToMonitor.filter { $0.contains(location.coordinate) }
+    guard let closest = candidates.min(by: { lhs, rhs in
+      let lefty = location.distance(from: .init(latitude: lhs.center.latitude, longitude: lhs.center.longitude))
+      let righty = location.distance(from: .init(latitude: rhs.center.latitude, longitude: rhs.center.longitude))
+      return lefty < righty
+    }) else { return }
+    
+    eventHandler(.manual(closest, location))
+  }
  
 }
 
@@ -292,7 +307,8 @@ public class GeoMonitor: NSObject, ObservableObject {
 
 extension GeoMonitor {
   
-  func runUpdateCycle(trigger: FetchTrigger) async {
+  @discardableResult
+  func runUpdateCycle(trigger: FetchTrigger) async -> CLLocation? {
     // Re-monitor current area, so that it updates the data again
     // and also fetch current location at same time, to prioritise monitoring
     // when we leave it.
@@ -301,6 +317,7 @@ extension GeoMonitor {
     // Ask to fetch data and wait for this to complete
     let regions = await fetchSource.fetchRegions(trigger: trigger)
     monitor(regions, location: location)
+    return location
   }
 
   func monitorCurrentArea() async throws -> CLLocation {
