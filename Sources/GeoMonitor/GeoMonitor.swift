@@ -15,6 +15,7 @@ public class GeoMonitor: NSObject, ObservableObject {
     static var maximumDistanceToRegionCenter: CLLocationDistance   = 25_000
     static var currentLocationFetchTimeOut: TimeInterval = 30
     static var currentLocationFetchRecency: TimeInterval = 10
+    static var minIntervalBetweenEnteringSameRegion: TimeInterval = 120
   }
   
   public enum FetchTrigger: String {
@@ -59,6 +60,8 @@ public class GeoMonitor: NSObject, ObservableObject {
   private let locationManager: CLLocationManager
   
   private let enabledKey: String?
+  
+  private var recentlyReportedRegionIdentifiers: [(String, Date)] = []
 
   public var maxRegionsToMonitor = 20
 
@@ -439,6 +442,17 @@ extension GeoMonitor: CLLocationManagerDelegate {
       
       do {
         let location = try await fetchCurrentLocation()
+        let minInterval = Constants.minIntervalBetweenEnteringSameRegion * -1
+        if let lastReport = recentlyReportedRegionIdentifiers.first(where: { $0.0 == region.identifier }), lastReport.1.timeIntervalSinceNow >= minInterval {
+#if DEBUG
+          eventHandler(.debug("GeoMonitor reported duplicate for \(region.identifier). Entered \(lastReport.1.timeIntervalSinceNow * -1) seconds ago.", .enteredRegion))
+#endif
+          return // Already reported with `minIntervalBetweenEnteringSameRegion`
+        }
+        
+        recentlyReportedRegionIdentifiers.append((region.identifier, Date()))
+        recentlyReportedRegionIdentifiers.removeAll { $0.1.timeIntervalSinceNow < minInterval }
+        
         eventHandler(.entered(match, location))
       } catch {
 #if DEBUG
