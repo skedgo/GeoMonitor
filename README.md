@@ -1,6 +1,6 @@
 # GeoMonitor
 
-A battery-efficient and privacy-preserving toolkit for monitoring the user's
+A battery-efficient and privacy-friendly mini framework for monitoring the user's
 location, triggering callbacks when the user starts moving and monitoring
 whether the user approaches specified regions.
 

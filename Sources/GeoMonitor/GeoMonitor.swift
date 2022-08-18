@@ -8,6 +8,14 @@ public protocol GeoMonitorDataSource {
 }
 
 
+/// Monitors the user's current location and triggers events when entering previously registered
+/// regions; also stays up-to-date by checking for new regions whenever the user moves significantly.
+///
+/// Typical use cases:
+/// - Monitoring dynamic regions that are of some relevant to the user and where the user wants to be
+///   alerted, when they get to them (e.g., traffic incidents); where monitoring can be long-term.
+/// - Monitoring a set of regions where the user wants to be alerted as they approach them, but
+///   monitoring is limited for brief durations (e.g., "get off here" alerts for transit apps)
 public class GeoMonitor: NSObject, ObservableObject {
   enum Constants {
     static var currentLocationRegionMaximumRadius: CLLocationDistance = 2_500
@@ -94,6 +102,7 @@ public class GeoMonitor: NSObject, ObservableObject {
     super.init()
     
     locationManager.delegate = self
+    locationManager.allowsBackgroundLocationUpdates = true
     
 #if !DEBUG
     locationManager.activityType = .automotiveNavigation
@@ -102,7 +111,7 @@ public class GeoMonitor: NSObject, ObservableObject {
   
   // MARK: - Access
   
-  /// Whether user has granted any kind of access to the device's location
+  /// Whether user has granted any kind of access to the device's location, when-in-use or always
   @Published public var hasAccess: Bool
   
   private var askHandler: (Bool) -> Void = { _ in }
@@ -225,6 +234,8 @@ public class GeoMonitor: NSObject, ObservableObject {
   // MARK: - Current region monitoring
   
   /// Whether background monitoring is currently enabled
+  ///
+  /// - warning: Setting this will prompt for access to the user's location with always-on tracking.
   @Published public var enableInBackground: Bool = false {
     didSet {
       guard enableInBackground != oldValue else { return }
@@ -265,9 +276,9 @@ public class GeoMonitor: NSObject, ObservableObject {
     locationManager.pausesLocationUpdatesAutomatically = enableInBackground // we can do that, as it implies "always on" permissions
 
     Task {
-      // It's okay for this to fail, but best to enable visit monitoring as
-      // a backup.
-      try? await monitorCurrentArea()
+      // Check if in region, which will also re-monitor the current location
+      // and update the regions(!)
+      await checkIfInRegion()
     }
     
     if enableVisitMonitoring {
@@ -287,10 +298,12 @@ public class GeoMonitor: NSObject, ObservableObject {
   }
   
   public func update(regions: [CLCircularRegion]) async {
-    let location = try? await fetchCurrentLocation()
+    let location = isMonitoring ? (try? await fetchCurrentLocation()) : nil
     monitor(regions, location: location)
   }
   
+  /// Trigger a check whether the user is in any of the registered regions and, if so, trigger the primary
+  /// event handler (with case `.manual`).
   public func checkIfInRegion() async {
     guard let location = await runUpdateCycle(trigger: .manual) else { return }
     
@@ -368,6 +381,12 @@ extension GeoMonitor {
 extension GeoMonitor {
   
   func monitor(_ regions: [CLCircularRegion], location: CLLocation?) {
+    // Remember all the regions, if it currently too far away
+    regionsToMonitor = regions
+    
+    guard isMonitoring else { return }
+    
+    // Then effectively monitor the nearest
     let nearby: [CLCircularRegion]
     if let currentLocation = location {
       nearby = regions.filter { region in
@@ -377,8 +396,6 @@ extension GeoMonitor {
     } else {
       nearby = regions
     }
-    
-    regionsToMonitor = nearby
     
     
     // The ones to monitor, optionally pruned by the nearest
@@ -420,6 +437,13 @@ extension GeoMonitor {
 extension GeoMonitor: CLLocationManagerDelegate {
   
   public func locationManager(_ manager: CLLocationManager, didEnterRegion region: CLRegion) {
+    guard isMonitoring else {
+#if DEBUG
+        eventHandler(.debug("GeoMonitor exited region, even though we've since stopped monitoring. Ignoring...", .enteredRegion))
+#endif
+      return
+    }
+    
     guard region.identifier != currentLocationRegion?.identifier else {
       return // Ignore re-entering current region; we only care about exiting this
     }
@@ -464,6 +488,13 @@ extension GeoMonitor: CLLocationManagerDelegate {
   }
   
   public func locationManager(_ manager: CLLocationManager, didExitRegion region: CLRegion) {
+    guard isMonitoring else {
+#if DEBUG
+        eventHandler(.debug("GeoMonitor entered region, even though we've since stopped monitoring. Ignoring...", .enteredRegion))
+#endif
+      return
+    }
+
     guard currentLocationRegion?.identifier == region.identifier else {
       return // Ignore exiting a monitored region; we only care about entering these.
     }
@@ -475,6 +506,13 @@ extension GeoMonitor: CLLocationManagerDelegate {
   }
   
   public func locationManager(_ manager: CLLocationManager, didVisit visit: CLVisit) {
+    guard isMonitoring else {
+#if DEBUG
+        eventHandler(.debug("GeoMonitor detected visit change, even though we've since stopped monitoring. Ignoring...", .enteredRegion))
+#endif
+      return
+    }
+
 #if DEBUG
     if visit.departureDate == .distantFuture {
       eventHandler(.debug("GeoMonitor visit arrival -> \(visit)", .visitMonitoring))
