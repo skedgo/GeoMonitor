@@ -44,22 +44,24 @@ public class GeoMonitor: NSObject, ObservableObject {
     case locationInaccurate(CLLocation)
   }
 
-#if DEBUG
-  public enum DebugKind {
+  public enum StatusKind {
+    case updatingMonitoredRegions
     case updatedCurrentLocationRegion
     case enteredRegion
     case visitMonitoring
     case stateChange
     case failure
   }
-#endif
 
   public enum Event {
-#if DEBUG
-    case debug(String, DebugKind)
-#endif
+    /// When the monitor detects the user entering a previously registered region
     case entered(CLCircularRegion, CLLocation?)
+    
+    /// When user is currently in a region, triggered from calling `checkIfInRegion()`
     case manual(CLCircularRegion, CLLocation?)
+
+    /// Internal status message, useful for debugging; should not be shown to user
+    case status(String, StatusKind)
   }
   
   private let fetchSource: GeoMonitorDataSource
@@ -361,9 +363,7 @@ extension GeoMonitor {
     self.currentLocationRegion = region
     self.locationManager.startMonitoring(for: region)
       
-#if DEBUG
-    eventHandler(.debug("GeoMonitor is monitoring \(MKDistanceFormatter().string(fromDistance: region.radius))...", .updatedCurrentLocationRegion))
-#endif
+    eventHandler(.status("GeoMonitor is monitoring \(MKDistanceFormatter().string(fromDistance: region.radius))...", .updatedCurrentLocationRegion))
 
     // ... continues in `didExitRegion`...
     
@@ -416,9 +416,11 @@ extension GeoMonitor {
     
     // Stop monitoring regions that are no irrelevant
     let toMonitorIDs = Set(toMonitor.map(\.identifier))
+    var removedCount: Int = 0
     for previous in locationManager.monitoredRegions {
       if !toMonitorIDs.contains(previous.identifier) && previous.identifier != "current-location" {
         locationManager.stopMonitoring(for: previous)
+        removedCount += 1
       }
     }
     
@@ -428,6 +430,8 @@ extension GeoMonitor {
       .filter { !monitoredAlready.contains($0.identifier) }
     newRegion
       .forEach(locationManager.startMonitoring(for:))
+    
+    eventHandler(.status("Updating monitored regions. \(regions.count) candidates, \(nearby.count) nearby; monitoring \(toMonitor.count) regions; removed \(removedCount), kept \(monitoredAlready.count), added \(newRegion.count); now monitoring \(locationManager.monitoredRegions.count).", .updatingMonitoredRegions))
   }
   
 }
@@ -438,9 +442,7 @@ extension GeoMonitor: CLLocationManagerDelegate {
   
   public func locationManager(_ manager: CLLocationManager, didEnterRegion region: CLRegion) {
     guard isMonitoring else {
-#if DEBUG
-        eventHandler(.debug("GeoMonitor exited region, even though we've since stopped monitoring. Ignoring...", .enteredRegion))
-#endif
+      eventHandler(.status("GeoMonitor exited region, even though we've since stopped monitoring. Ignoring...", .enteredRegion))
       return
     }
     
@@ -454,23 +456,17 @@ extension GeoMonitor: CLLocationManagerDelegate {
       
       // Now we can check
       guard let match = regionsToMonitor.first(where: { $0.identifier == region.identifier }) else {
-#if DEBUG
-        eventHandler(.debug("GeoMonitor entered outdated region -> \(region)", .enteredRegion))
-#endif
+        eventHandler(.status("GeoMonitor entered outdated region -> \(region)", .enteredRegion))
         return // Has since disappeared
       }
       
-#if DEBUG
-      eventHandler(.debug("GeoMonitor entered -> \(region)", .enteredRegion))
-#endif
+      eventHandler(.status("GeoMonitor entered -> \(region)", .enteredRegion))
       
       do {
         let location = try await fetchCurrentLocation()
         let minInterval = Constants.minIntervalBetweenEnteringSameRegion * -1
         if let lastReport = recentlyReportedRegionIdentifiers.first(where: { $0.0 == region.identifier }), lastReport.1.timeIntervalSinceNow >= minInterval {
-#if DEBUG
-          eventHandler(.debug("GeoMonitor reported duplicate for \(region.identifier). Entered \(lastReport.1.timeIntervalSinceNow * -1) seconds ago.", .enteredRegion))
-#endif
+          eventHandler(.status("GeoMonitor reported duplicate for \(region.identifier). Entered \(lastReport.1.timeIntervalSinceNow * -1) seconds ago.", .enteredRegion))
           return // Already reported with `minIntervalBetweenEnteringSameRegion`
         }
         
@@ -479,9 +475,7 @@ extension GeoMonitor: CLLocationManagerDelegate {
         
         eventHandler(.entered(match, location))
       } catch {
-#if DEBUG
-        eventHandler(.debug("GeoMonitor location fetch failed after entering region -> \(error)", .failure))
-#endif
+        eventHandler(.status("GeoMonitor location fetch failed after entering region -> \(error)", .failure))
         eventHandler(.entered(match, nil))
       }
     }
@@ -489,9 +483,7 @@ extension GeoMonitor: CLLocationManagerDelegate {
   
   public func locationManager(_ manager: CLLocationManager, didExitRegion region: CLRegion) {
     guard isMonitoring else {
-#if DEBUG
-        eventHandler(.debug("GeoMonitor entered region, even though we've since stopped monitoring. Ignoring...", .enteredRegion))
-#endif
+      eventHandler(.status("GeoMonitor entered region, even though we've since stopped monitoring. Ignoring...", .enteredRegion))
       return
     }
 
@@ -507,20 +499,16 @@ extension GeoMonitor: CLLocationManagerDelegate {
   
   public func locationManager(_ manager: CLLocationManager, didVisit visit: CLVisit) {
     guard isMonitoring else {
-#if DEBUG
-        eventHandler(.debug("GeoMonitor detected visit change, even though we've since stopped monitoring. Ignoring...", .enteredRegion))
-#endif
+      eventHandler(.status("GeoMonitor detected visit change, even though we've since stopped monitoring. Ignoring...", .enteredRegion))
       return
     }
 
-#if DEBUG
     if visit.departureDate == .distantFuture {
-      eventHandler(.debug("GeoMonitor visit arrival -> \(visit)", .visitMonitoring))
+      eventHandler(.status("GeoMonitor visit arrival -> \(visit)", .visitMonitoring))
     } else {
       let duration = DateComponentsFormatter().string(from: visit.arrivalDate, to: visit.departureDate) ?? "unknown duration"
-      eventHandler(.debug("GeoMonitor visit departure after \(duration) -> \(visit)", .visitMonitoring))
+      eventHandler(.status("GeoMonitor visit departure after \(duration) -> \(visit)", .visitMonitoring))
     }
-#endif
 
     Task {
       // TODO: We could detect if it's an arrival at a new location, by checking `visit.departureTime == .distanceFuture`
@@ -549,23 +537,15 @@ extension GeoMonitor: CLLocationManagerDelegate {
   }
   
   public func locationManagerDidPauseLocationUpdates(_ manager: CLLocationManager) {
-#if DEBUG
-    eventHandler(.debug("GeoMonitor paused updates -> \(manager == locationManager)", .stateChange))
-#endif
+    eventHandler(.status("GeoMonitor paused updates -> \(manager == locationManager)", .stateChange))
   }
   
   public func locationManagerDidResumeLocationUpdates(_ manager: CLLocationManager) {
-#if DEBUG
-    eventHandler(.debug("GeoMonitor resumed updates -> \(manager == locationManager)", .stateChange))
-#endif
+    eventHandler(.status("GeoMonitor resumed updates -> \(manager == locationManager)", .stateChange))
   }
   
   public func locationManager(_ manager: CLLocationManager, didFailWithError error: Error) {
-#if DEBUG
-    eventHandler(.debug("GeoMonitor failed -> \(error) -- \(error.localizedDescription)", .failure))
-    print("GeoMonitor's location manager failed: \(error)")
-#endif
-    
+    eventHandler(.status("GeoMonitor failed -> \(error) -- \(error.localizedDescription)", .failure))
     notify(.failure(error))
   }
   
