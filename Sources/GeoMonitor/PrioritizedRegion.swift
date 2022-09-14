@@ -9,7 +9,8 @@ import Foundation
 import CoreLocation
 
 public class PrioritizedRegion: CLCircularRegion {
-  
+
+  /// High number means high priority
   public let priority: Int
   
   public init(center: CLLocationCoordinate2D, radius: CLLocationDistance, identifier: String, priority: Int) {

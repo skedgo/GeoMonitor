@@ -18,12 +18,13 @@ public protocol GeoMonitorDataSource {
 ///   monitoring is limited for brief durations (e.g., "get off here" alerts for transit apps)
 public class GeoMonitor: NSObject, ObservableObject {
   enum Constants {
-    static var currentLocationRegionMaximumRadius: CLLocationDistance = 2_500
-    static var currentLocationRegionRadiusDelta: CLLocationDistance   = 2_000
-    static var maximumDistanceToRegionCenter: CLLocationDistance   = 25_000
-    static var currentLocationFetchTimeOut: TimeInterval = 30
-    static var currentLocationFetchRecency: TimeInterval = 10
-    static var minIntervalBetweenEnteringSameRegion: TimeInterval = 120
+    static var currentLocationRegionMaximumRadius: CLLocationDistance      = 2_500
+    static var currentLocationRegionRadiusDelta: CLLocationDistance        = 2_000
+    static var maximumDistanceToRegionCenter: CLLocationDistance           = 10_000
+    static var maximumDistanceForPriorityPruningCenter: CLLocationDistance = 5_000
+    static var currentLocationFetchTimeOut: TimeInterval                   = 30
+    static var currentLocationFetchRecency: TimeInterval                   = 10
+    static var minIntervalBetweenEnteringSameRegion: TimeInterval          = 120
   }
   
   public enum FetchTrigger: String {
@@ -72,6 +73,8 @@ public class GeoMonitor: NSObject, ObservableObject {
   private let enabledKey: String?
   
   private var recentlyReportedRegionIdentifiers: [(String, Date)] = []
+  
+  private var monitorTask: Task<Void, Error>? = nil
 
   public var maxRegionsToMonitor = 20
 
@@ -299,9 +302,16 @@ public class GeoMonitor: NSObject, ObservableObject {
     locationManager.stopMonitoringVisits()
   }
   
+  /// Schedules an update after a short interval, only using the regions that were last used when
+  /// this is called in quick succession.
+  public func scheduleUpdate(regions: [CLCircularRegion]) async {
+    let location = isMonitoring ? (try? await fetchCurrentLocation()) : nil
+    monitorDebounced(regions, location: location)
+  }
+  
   public func update(regions: [CLCircularRegion]) async {
     let location = isMonitoring ? (try? await fetchCurrentLocation()) : nil
-    monitor(regions, location: location)
+    monitorNow(regions, location: location)
   }
   
   /// Trigger a check whether the user is in any of the registered regions and, if so, trigger the primary
@@ -334,7 +344,7 @@ extension GeoMonitor {
 
     // Ask to fetch data and wait for this to complete
     let regions = await fetchSource.fetchRegions(trigger: trigger)
-    monitor(regions, location: location)
+    monitorDebounced(regions, location: location)
     return location
   }
 
@@ -380,15 +390,27 @@ extension GeoMonitor {
 
 extension GeoMonitor {
   
-  func monitor(_ regions: [CLCircularRegion], location: CLLocation?) {
+  func monitorDebounced(_ regions: [CLCircularRegion], location: CLLocation?) {
+    monitorTask?.cancel()
+    monitorTask = Task {
+      try await Task.sleep(nanoseconds: 2_500_000_000)
+      monitorNow(regions, location: location)
+    }
+  }
+  
+  func monitorNow(_ regions: [CLCircularRegion], location: CLLocation?) {
+    guard !Task.isCancelled else { return }
+
     // Remember all the regions, if it currently too far away
     regionsToMonitor = regions
     
     guard isMonitoring else { return }
     
+    let currentLocation = location ?? self.currentLocation
+    
     // Then effectively monitor the nearest
     let nearby: [CLCircularRegion]
-    if let currentLocation = location {
+    if let currentLocation = currentLocation {
       nearby = regions.filter { region in
         let distance = currentLocation.distance(from: .init(latitude: region.center.latitude, longitude: region.center.longitude))
         return distance < Constants.maximumDistanceToRegionCenter
@@ -397,16 +419,23 @@ extension GeoMonitor {
       nearby = regions
     }
     
-    
-    // The ones to monitor, optionally pruned by the nearest
+    // The ones to monitor, optionally pruned by either priority or the nearest
     let toMonitor: [CLCircularRegion]
     let maxCount = maxRegionsToMonitor - 1 // keep one for current location
-    if let currentLocation = location, nearby.count > maxCount {
+    if let currentLocation = currentLocation, nearby.count > maxCount {
       let prefix = nearby
         .sorted { lhs, rhs in
           let leftDistance = currentLocation.distance(from: .init(latitude: lhs.center.latitude, longitude: lhs.center.longitude))
           let rightDistance = currentLocation.distance(from: .init(latitude: rhs.center.latitude, longitude: rhs.center.longitude))
-          return leftDistance < rightDistance
+          if let leftPrioritized = lhs as? PrioritizedRegion,
+              let rightPrioritized = rhs as? PrioritizedRegion,
+              leftPrioritized.priority != rightPrioritized.priority,
+              leftDistance < Constants.maximumDistanceForPriorityPruningCenter,
+              rightDistance < Constants.maximumDistanceForPriorityPruningCenter {
+            return leftPrioritized.priority > rightPrioritized.priority
+          } else {
+            return leftDistance < rightDistance
+          }
         }
         .prefix(maxCount)
       toMonitor = Array(prefix)
