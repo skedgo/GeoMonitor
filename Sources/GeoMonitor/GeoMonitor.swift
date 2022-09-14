@@ -408,39 +408,35 @@ extension GeoMonitor {
     
     let currentLocation = location ?? self.currentLocation
     
+    let processed: [(CLCircularRegion, distance: CLLocationDistance?, priority: Int?)] = regions.map { region in
+      let distance = currentLocation.map { $0.distance(from: .init(latitude: region.center.latitude, longitude: region.center.longitude)) }
+      let priority = (region as? PrioritizedRegion)?.priority
+      return (region, distance: distance, priority: priority)
+    }
+    
     // Then effectively monitor the nearest
-    let nearby: [CLCircularRegion]
-    if let currentLocation = currentLocation {
-      nearby = regions.filter { region in
-        let distance = currentLocation.distance(from: .init(latitude: region.center.latitude, longitude: region.center.longitude))
-        return distance < Constants.maximumDistanceToRegionCenter
-      }
-    } else {
-      nearby = regions
+    let nearby = processed.filter { _, distance, _ in
+      (distance ?? 0) < Constants.maximumDistanceToRegionCenter
     }
     
     // The ones to monitor, optionally pruned by either priority or the nearest
     let toMonitor: [CLCircularRegion]
     let maxCount = maxRegionsToMonitor - 1 // keep one for current location
-    if let currentLocation = currentLocation, nearby.count > maxCount {
+    if nearby.count > maxCount {
       let prefix = nearby
         .sorted { lhs, rhs in
-          let leftDistance = currentLocation.distance(from: .init(latitude: lhs.center.latitude, longitude: lhs.center.longitude))
-          let rightDistance = currentLocation.distance(from: .init(latitude: rhs.center.latitude, longitude: rhs.center.longitude))
-          if let leftPrioritized = lhs as? PrioritizedRegion,
-              let rightPrioritized = rhs as? PrioritizedRegion,
-              leftPrioritized.priority != rightPrioritized.priority,
-              leftDistance < Constants.maximumDistanceForPriorityPruningCenter,
-              rightDistance < Constants.maximumDistanceForPriorityPruningCenter {
-            return leftPrioritized.priority > rightPrioritized.priority
-          } else {
+          if let leftDistance = lhs.distance, let rightDistance = rhs.distance, leftDistance > Constants.maximumDistanceForPriorityPruningCenter || rightDistance > Constants.maximumDistanceForPriorityPruningCenter {
             return leftDistance < rightDistance
+          } else if let leftPriority = lhs.priority, let rightPriority = rhs.priority, leftPriority != rightPriority {
+            return leftPriority > rightPriority
+          } else {
+            return lhs.0.identifier < rhs.0.identifier
           }
         }
         .prefix(maxCount)
-      toMonitor = Array(prefix)
+      toMonitor = Array(prefix.map(\.0))
     } else {
-      toMonitor = nearby
+      toMonitor = nearby.map(\.0)
     }
     
     // Stop monitoring regions that are no irrelevant
