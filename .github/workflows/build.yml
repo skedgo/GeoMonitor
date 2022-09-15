@@ -1,0 +1,18 @@
+name: Swift
+
+on:
+  push:
+    branches: [ main ]
+  pull_request:
+    branches: [ main ]
+   
+jobs:
+  macos:
+    runs-on: macos-11 # macos-latest is still 10.15, which we don't support
+    steps:
+    - uses: actions/checkout@v2
+    - uses: devbotsxyz/xcode-select@v1.1.0
+      with:
+        version: latest
+    - name: Build & Test
+      run: xcodebuild -scheme 'GeoMonitor' -sdk iphonesimulator -destination 'platform=iOS Simulator,name=iPhone 13'
