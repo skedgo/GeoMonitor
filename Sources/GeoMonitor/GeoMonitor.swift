@@ -306,12 +306,12 @@ public class GeoMonitor: NSObject, ObservableObject {
   /// this is called in quick succession.
   public func scheduleUpdate(regions: [CLCircularRegion]) async {
     let location = isMonitoring ? (try? await fetchCurrentLocation()) : nil
-    monitorDebounced(regions, location: location)
+    monitorDebounced(regions, location: location, delay: 2.5)
   }
   
   public func update(regions: [CLCircularRegion]) async {
     let location = isMonitoring ? (try? await fetchCurrentLocation()) : nil
-    monitorNow(regions, location: location)
+    monitorDebounced(regions, location: location)
   }
   
   /// Trigger a check whether the user is in any of the registered regions and, if so, trigger the primary
@@ -390,15 +390,17 @@ extension GeoMonitor {
 
 extension GeoMonitor {
   
-  func monitorDebounced(_ regions: [CLCircularRegion], location: CLLocation?) {
+  private func monitorDebounced(_ regions: [CLCircularRegion], location: CLLocation?, delay: TimeInterval? = nil) {
     monitorTask?.cancel()
     monitorTask = Task {
-      try await Task.sleep(nanoseconds: 2_500_000_000)
+      if let delay {
+        try await Task.sleep(nanoseconds: UInt64(delay * 1_000_000_000))
+      }
       monitorNow(regions, location: location)
     }
   }
   
-  func monitorNow(_ regions: [CLCircularRegion], location: CLLocation?) {
+  private func monitorNow(_ regions: [CLCircularRegion], location: CLLocation?) {
     guard !Task.isCancelled else { return }
 
     // Remember all the regions, if it currently too far away
