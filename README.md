@@ -15,14 +15,7 @@ Relies on a mixture of techniques, such as:
   - Go to *Signing & Capabilities*, *Background Modes* and make sure *Location updates* is ticket.
   - Go to *Info*, and make sure you have usage descriptions for "Privacy - Location Always", "Privacy - Location Always and When in Use", and "Privacy - Location When In Use" set.
 
-
 ## Usage
-
-TODO:
-
-- [ ] Optional: Set maximum number of regions for GeoMonitor to use. If this
-      is not specified, it'll use the maximum of 20. Set this if you're 
-      monitoring regions yourself.
 
 ```swift
 self.monitor = GeoMonitor {
@@ -42,14 +35,11 @@ self.monitor = GeoMonitor {
     // Called when a visit was registered
   }
 }
-monitor.maxRegionsToMonitor = 18
 monitor.enableVisitMonitoring = true
 monitor.start()
 ```
 
 ## Considerations
-
-TODO:
 
 Regular iOS restrictions apply, such as:
 
