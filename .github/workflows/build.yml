@@ -14,10 +14,8 @@ jobs:
       with:
         xcode-version: latest-stable
     - uses: actions/checkout@v3
-    - name: Build
-      run: xcodebuild clean build-for-testing -scheme 'GeoMonitor' -sdk iphonesimulator -destination 'platform=iOS Simulator,name=iPhone 14'
-    - name: Test
-      run: xcodebuild test-without-building -scheme 'GeoMonitor' -sdk iphonesimulator -destination 'platform=iOS Simulator,name=iPhone 14' -resultBundlePath TestResults
+    - name: Build & Test
+      run: xcodebuild test -scheme 'GeoMonitor' -sdk iphonesimulator -destination 'platform=iOS Simulator,name=iPhone 14' -resultBundlePath TestResults
     - uses: kishikawakatsumi/xcresulttool@v1.7.0
       with:
         path: TestResults.xcresult
