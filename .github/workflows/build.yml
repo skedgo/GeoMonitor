@@ -13,6 +13,14 @@ jobs:
     - uses: maxim-lobanov/setup-xcode@v1
       with:
         xcode-version: latest-stable
-    - uses: actions/checkout@v2
-    - name: Build & Test
-      run: xcodebuild -scheme 'GeoMonitor' -sdk iphonesimulator -destination 'platform=iOS Simulator,name=iPhone 13'
+    - uses: actions/checkout@v3
+    - name: Build
+      run: xcodebuild clean build-for-testing -scheme 'GeoMonitor' -sdk iphonesimulator -destination 'platform=iOS Simulator,name=iPhone 14'
+    - name: Test
+      run: xcodebuild test -scheme 'GeoMonitor' -sdk iphonesimulator -destination 'platform=iOS Simulator,name=iPhone 14' -resultBundlePath TestResults
+    - uses: kishikawakatsumi/xcresulttool@v1.7.0
+      with:
+        path: TestResults.xcresult
+      if: success() || failure()
+      # ^ This is important because the action will be run
+      # even if the test fails in the previous step.
