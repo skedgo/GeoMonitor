@@ -17,6 +17,8 @@ Relies on a mixture of techniques, such as:
 
 ## Usage
 
+*GeoMonitor requires iOS 14+*
+
 ```swift
 self.monitor = GeoMonitor {
   // Fetch the latest regions; also called when entering one.

@@ -3,6 +3,7 @@ import CoreLocation
 
 @testable import GeoMonitor
 
+@available(iOS 14.0, *)
 final class GeoMonitorTests: XCTestCase {
   func testManyRegions() throws {
     // This is an example of a functional test case.
