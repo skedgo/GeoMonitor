@@ -3,6 +3,7 @@ import Foundation
 import CoreLocation
 import MapKit
 
+@available(iOS 14.0, *)
 public protocol GeoMonitorDataSource {
   func fetchRegions(trigger: GeoMonitor.FetchTrigger) async -> [CLCircularRegion]
 }
@@ -16,6 +17,7 @@ public protocol GeoMonitorDataSource {
 ///   alerted, when they get to them (e.g., traffic incidents); where monitoring can be long-term.
 /// - Monitoring a set of regions where the user wants to be alerted as they approach them, but
 ///   monitoring is limited for brief durations (e.g., "get off here" alerts for transit apps)
+@available(iOS 14.0, *)
 public class GeoMonitor: NSObject, ObservableObject {
   enum Constants {
     static var currentLocationRegionMaximumRadius: CLLocationDistance      = 2_500
@@ -333,6 +335,7 @@ public class GeoMonitor: NSObject, ObservableObject {
 
 // MARK: - Trigger on move
 
+@available(iOS 14.0, *)
 extension GeoMonitor {
   
   @discardableResult
@@ -388,6 +391,7 @@ extension GeoMonitor {
 
 // MARK: - Alert monitoring logic
 
+@available(iOS 14.0, *)
 extension GeoMonitor {
   
   private func monitorDebounced(_ regions: [CLCircularRegion], location: CLLocation?, delay: TimeInterval? = nil) {
@@ -471,6 +475,7 @@ extension GeoMonitor {
 
 // MARK: - CLLocationManagerDelegate
 
+@available(iOS 14.0, *)
 extension GeoMonitor: CLLocationManagerDelegate {
   
   public func locationManager(_ manager: CLLocationManager, didEnterRegion region: CLRegion) {
@@ -603,6 +608,7 @@ extension GeoMonitor: CLLocationManagerDelegate {
 
 // MARK: - Helpers
 
+@available(iOS 14.0, *)
 private struct SimpleDataSource: GeoMonitorDataSource {
   let handler: (GeoMonitor.FetchTrigger) async -> [CLCircularRegion]
   
