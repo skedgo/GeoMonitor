@@ -79,6 +79,10 @@ public class GeoMonitor: NSObject, ObservableObject {
   private var monitorTask: Task<Void, Error>? = nil
 
   public var maxRegionsToMonitor = 20
+  
+  /// Set to `true` if the `hasAccuracy` values should also check whether the user
+  /// has provided access to the full accuracy/
+  public var needsFullAccuracy: Bool = false
 
   /// Instantiates new monitor
   /// - Parameters:
@@ -138,12 +142,12 @@ public class GeoMonitor: NSObject, ObservableObject {
   private func updateAccess() {
     switch locationManager.authorizationStatus {
     case .authorizedAlways:
-      hasAccess = true
+      hasAccess = !needsFullAccuracy || locationManager.accuracyAuthorization == .fullAccuracy
       // Note: We do NOT update `enableInBackground` here, as that's the user's
       // setting, i.e., they might not want to have it enabled even though the
       // app has permissions.
     case .authorizedWhenInUse:
-      hasAccess = true
+      hasAccess = !needsFullAccuracy || locationManager.accuracyAuthorization == .fullAccuracy
       enableInBackground = false
     case .denied, .notDetermined, .restricted:
       hasAccess = false
