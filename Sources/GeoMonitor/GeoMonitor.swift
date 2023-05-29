@@ -18,6 +18,7 @@ public protocol GeoMonitorDataSource {
 /// - Monitoring a set of regions where the user wants to be alerted as they approach them, but
 ///   monitoring is limited for brief durations (e.g., "get off here" alerts for transit apps)
 @available(iOS 14.0, *)
+@MainActor
 public class GeoMonitor: NSObject, ObservableObject {
   enum Constants {
     static var currentLocationRegionMaximumRadius: CLLocationDistance      = 2_500
@@ -220,8 +221,10 @@ public class GeoMonitor: NSObject, ObservableObject {
     locationManager.desiredAccuracy = desiredAccuracy
     locationManager.requestLocation()
     
-    fetchTimer = .scheduledTimer(withTimeInterval: Constants.currentLocationFetchTimeOut, repeats: false) { [unowned self] _ in
-      self.notify(.failure(LocationFetchError.noLocationFetchedInTime))
+    fetchTimer = .scheduledTimer(withTimeInterval: Constants.currentLocationFetchTimeOut, repeats: false) { [weak self] _ in
+      Task { [weak self] in
+        await self?.notify(.failure(LocationFetchError.noLocationFetchedInTime))
+      }
     }
     
     return try await withCheckedThrowingContinuation { continuation in
@@ -280,6 +283,8 @@ public class GeoMonitor: NSObject, ObservableObject {
   }
   
   public func startMonitoring() {
+    dispatchPrecondition(condition: .onQueue(.main))
+    
     guard !isMonitoring, hasAccess else { return }
     
     isMonitoring = true
@@ -298,6 +303,8 @@ public class GeoMonitor: NSObject, ObservableObject {
   }
   
   public func stopMonitoring() {
+    dispatchPrecondition(condition: .onQueue(.main))
+    
     guard isMonitoring else { return }
     
     isMonitoring = false
@@ -344,6 +351,8 @@ extension GeoMonitor {
   
   @discardableResult
   func runUpdateCycle(trigger: FetchTrigger) async -> CLLocation? {
+    dispatchPrecondition(condition: .onQueue(.main))
+    
     // Re-monitor current area, so that it updates the data again
     // and also fetch current location at same time, to prioritise monitoring
     // when we leave it.
@@ -356,6 +365,8 @@ extension GeoMonitor {
   }
 
   func monitorCurrentArea() async throws -> CLLocation {
+    dispatchPrecondition(condition: .onQueue(.main))
+    
     let location = try await fetchCurrentLocation()
 
     // Monitor a radius around it, using a single fixed "my location" circle
@@ -399,17 +410,25 @@ extension GeoMonitor {
 extension GeoMonitor {
   
   private func monitorDebounced(_ regions: [CLCircularRegion], location: CLLocation?, delay: TimeInterval? = nil) {
+    dispatchPrecondition(condition: .onQueue(.main))
+
+    // When this fires in the background we end up with many of these somehow
+    
     monitorTask?.cancel()
     monitorTask = Task {
       if let delay {
         try await Task.sleep(nanoseconds: UInt64(delay * 1_000_000_000))
+        try Task.checkCancellation()
       }
+      
       monitorNow(regions, location: location)
     }
   }
   
   private func monitorNow(_ regions: [CLCircularRegion], location: CLLocation?) {
     guard !Task.isCancelled else { return }
+    
+    dispatchPrecondition(condition: .onQueue(.main))
 
     // Remember all the regions, if it currently too far away
     regionsToMonitor = regions
@@ -443,8 +462,10 @@ extension GeoMonitor {
     
     eventHandler(.status("Updating monitored regions. \(regions.count) candidates; monitoring \(toMonitor.count) regions; removed \(removedCount), kept \(monitoredAlready.count), added \(newRegion.count); now monitoring \(locationManager.monitoredRegions.count).", .updatingMonitoredRegions))
   }
-  
+
+  @MainActor
   static func determineRegionsToMonitor(regions: [CLCircularRegion], location: CLLocation?, max: Int) -> [CLCircularRegion] {
+    
     let processed: [(CLCircularRegion, distance: CLLocationDistance?, priority: Int?)] = regions.map { region in
       let distance = location.map { $0.distance(from: .init(latitude: region.center.latitude, longitude: region.center.longitude)) }
       let priority = (region as? PrioritizedRegion)?.priority
@@ -483,6 +504,8 @@ extension GeoMonitor {
 extension GeoMonitor: CLLocationManagerDelegate {
   
   public func locationManager(_ manager: CLLocationManager, didEnterRegion region: CLRegion) {
+    dispatchPrecondition(condition: .onQueue(.main))
+
     guard isMonitoring else {
       eventHandler(.status("GeoMonitor exited region, even though we've since stopped monitoring. Ignoring...", .enteredRegion))
       return
@@ -524,6 +547,8 @@ extension GeoMonitor: CLLocationManagerDelegate {
   }
   
   public func locationManager(_ manager: CLLocationManager, didExitRegion region: CLRegion) {
+    dispatchPrecondition(condition: .onQueue(.main))
+
     guard isMonitoring else {
       eventHandler(.status("GeoMonitor entered region, even though we've since stopped monitoring. Ignoring...", .enteredRegion))
       return
@@ -540,6 +565,8 @@ extension GeoMonitor: CLLocationManagerDelegate {
   }
   
   public func locationManager(_ manager: CLLocationManager, didVisit visit: CLVisit) {
+    dispatchPrecondition(condition: .onQueue(.main))
+    
     guard isMonitoring else {
       eventHandler(.status("GeoMonitor detected visit change, even though we've since stopped monitoring. Ignoring...", .enteredRegion))
       return
@@ -563,6 +590,8 @@ extension GeoMonitor: CLLocationManagerDelegate {
     print("GeoMonitor updated locations -> \(locations)")
 #endif
     
+    dispatchPrecondition(condition: .onQueue(.main))
+
     guard let latest = locations.last else { return assertionFailure() }
     
     guard let latestAccurate = locations
@@ -592,6 +621,8 @@ extension GeoMonitor: CLLocationManagerDelegate {
   }
   
   public func locationManagerDidChangeAuthorization(_ manager: CLLocationManager) {
+    dispatchPrecondition(condition: .onQueue(.main))
+
     updateAccess()
     askHandler(hasAccess)
     askHandler = { _ in }
