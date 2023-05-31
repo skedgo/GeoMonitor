@@ -507,7 +507,7 @@ extension GeoMonitor: CLLocationManagerDelegate {
     dispatchPrecondition(condition: .onQueue(.main))
 
     guard isMonitoring else {
-      eventHandler(.status("GeoMonitor exited region, even though we've since stopped monitoring. Ignoring...", .enteredRegion))
+      eventHandler(.status("GeoMonitor entered region, even though we've since stopped monitoring. Ignoring...", .enteredRegion))
       return
     }
     
@@ -550,7 +550,7 @@ extension GeoMonitor: CLLocationManagerDelegate {
     dispatchPrecondition(condition: .onQueue(.main))
 
     guard isMonitoring else {
-      eventHandler(.status("GeoMonitor entered region, even though we've since stopped monitoring. Ignoring...", .enteredRegion))
+      eventHandler(.status("GeoMonitor exited region, even though we've since stopped monitoring. Ignoring...", .enteredRegion))
       return
     }
 
