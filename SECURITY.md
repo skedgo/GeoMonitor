@@ -6,10 +6,8 @@ We release patches for security vulnerabilities in the following versions:
 
 | Version | Supported          |
 | ------- | ------------------ |
-| 1.x.x   | :white_check_mark: |
-| < 1.0   | :x:                |
-
-> **Note:** Please update this table to reflect the actual versions you support.
+| >= 0.2  | :white_check_mark: |
+| < 0.2   | :x:                |
 
 ---
 
@@ -128,7 +126,7 @@ For general security questions or concerns, please contact:
 
 ---
 
-> **Last Updated:** {{ DATE }}  
+> **Last Updated:** 14 Nov 2025  
 > **Version:** 1.0  
 > 
 > This security policy is maintained by the repository maintainers and reviewed regularly.
