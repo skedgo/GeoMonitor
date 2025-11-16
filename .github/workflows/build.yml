@@ -12,7 +12,7 @@ jobs:
     steps:
     - uses: maxim-lobanov/setup-xcode@v1
       with:
-        xcode-version: latest-stable
+        xcode-version: 26.0.1 # 26.1 has issues on GHA
     - uses: actions/checkout@v4
     - name: Build & Test
       run: xcodebuild test -scheme 'GeoMonitor' -sdk iphonesimulator -destination 'platform=iOS Simulator,name=iPhone 17' -resultBundlePath TestResults
