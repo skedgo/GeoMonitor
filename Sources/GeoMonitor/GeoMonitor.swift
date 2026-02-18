@@ -3,8 +3,7 @@ import Foundation
 import CoreLocation
 import MapKit
 
-@available(iOS 14.0, *)
-public protocol GeoMonitorDataSource {
+@MainActor public protocol GeoMonitorDataSource {
   func fetchRegions(trigger: GeoMonitor.FetchTrigger) async -> [CLCircularRegion]
 }
 
@@ -17,20 +16,21 @@ public protocol GeoMonitorDataSource {
 ///   alerted, when they get to them (e.g., traffic incidents); where monitoring can be long-term.
 /// - Monitoring a set of regions where the user wants to be alerted as they approach them, but
 ///   monitoring is limited for brief durations (e.g., "get off here" alerts for transit apps)
-@available(iOS 14.0, *)
 @MainActor
 public class GeoMonitor: NSObject, ObservableObject {
-  enum Constants {
-    static var currentLocationRegionMaximumRadius: CLLocationDistance      = 2_500
-    static var currentLocationRegionRadiusDelta: CLLocationDistance        = 2_000
-    static var maximumDistanceToRegionCenter: CLLocationDistance           = 10_000
-    static var maximumDistanceForPriorityPruningCenter: CLLocationDistance = 5_000
-    static var currentLocationFetchTimeOut: TimeInterval                   = 30
-    static var currentLocationFetchRecency: TimeInterval                   = 10
-    static var minIntervalBetweenEnteringSameRegion: TimeInterval          = 120
+  public struct Config: Sendable {
+    public static let `default` = Config()
+    
+    public var currentLocationRegionMaximumRadius: CLLocationDistance      = 2_500
+    public var currentLocationRegionRadiusDelta: CLLocationDistance        = 2_000
+    public var maximumDistanceToRegionCenter: CLLocationDistance           = 10_000
+    public var maximumDistanceForPriorityPruningCenter: CLLocationDistance = 5_000
+    public var currentLocationFetchTimeOut: TimeInterval                   = 30
+    public var currentLocationFetchRecency: TimeInterval                   = 10
+    public var minIntervalBetweenEnteringSameRegion: TimeInterval          = 120
   }
   
-  public enum FetchTrigger: String {
+  public enum FetchTrigger: String, Sendable {
     case manual
     case initial
     case visitMonitoring
@@ -84,14 +84,16 @@ public class GeoMonitor: NSObject, ObservableObject {
   /// Set to `true` if the `hasAccuracy` values should also check whether the user
   /// has provided access to the full accuracy/
   public var needsFullAccuracy: Bool = false
+  
+  private let config: Config
 
   /// Instantiates new monitor
   /// - Parameters:
   ///   - enabledKey: User defaults key to use store whether background tracking should be enabled
   ///   - fetch: Handler that's called when the monitor decides it's a good time to update the regions to monitor. Should fetch and then return all regions to be monitored (even if they didn't change).
   ///   - onEvent: Handler that's called when a relevant event is happening, including when one of the monitored regions is entered.
-  public convenience init(enabledKey: String? = nil, fetch: @escaping (GeoMonitor.FetchTrigger) async -> [CLCircularRegion], onEvent: @escaping (Event) -> Void) {
-    self.init(enabledKey: enabledKey, dataSource: SimpleDataSource(handler: fetch), onEvent: onEvent)
+  public convenience init(enabledKey: String? = nil, config: Config = .default, fetch: @escaping (GeoMonitor.FetchTrigger) async -> [CLCircularRegion], onEvent: @escaping (Event) -> Void) {
+    self.init(enabledKey: enabledKey, dataSource: SimpleDataSource(handler: fetch), config: config, onEvent: onEvent)
   }
   
   /// Instantiates new monitor
@@ -99,10 +101,11 @@ public class GeoMonitor: NSObject, ObservableObject {
   ///   - enabledKey: User defaults key to use store whether background tracking should be enabled
   ///   - dataSource: Data source that provides regions. Will be maintained strongly.
   ///   - onEvent: Handler that's called when a relevant event is happening, including when one of the monitored regions is entered.
-  public init(enabledKey: String? = nil, dataSource: GeoMonitorDataSource, onEvent: @escaping (Event) -> Void) {
+  public init(enabledKey: String? = nil, dataSource: GeoMonitorDataSource, config: Config = .default, onEvent: @escaping (Event) -> Void) {
     fetchSource = dataSource
     eventHandler = onEvent
     locationManager = .init()
+    self.config = config
     hasAccess = false
     self.enabledKey = enabledKey
     if let enabledKey = enabledKey {
@@ -204,14 +207,14 @@ public class GeoMonitor: NSObject, ObservableObject {
   
   private var fetchTimer: Timer?
   
-  private func fetchCurrentLocation() async throws -> CLLocation {
+  public func fetchCurrentLocation() async throws -> CLLocation {
     guard hasAccess else {
       throw LocationFetchError.accessNotProvided
     }
     
     let desiredAccuracy = kCLLocationAccuracyHundredMeters
     if let currentLocation = currentLocation,
-        currentLocation.timestamp.timeIntervalSinceNow > Constants.currentLocationFetchRecency * -1,
+        currentLocation.timestamp.timeIntervalSinceNow > config.currentLocationFetchRecency * -1,
         currentLocation.horizontalAccuracy <= desiredAccuracy {
       // We have a current location and it's less than 10 seconds old. Just use it
       return currentLocation
@@ -221,7 +224,7 @@ public class GeoMonitor: NSObject, ObservableObject {
     locationManager.desiredAccuracy = desiredAccuracy
     locationManager.requestLocation()
     
-    fetchTimer = .scheduledTimer(withTimeInterval: Constants.currentLocationFetchTimeOut, repeats: false) { [weak self] _ in
+    fetchTimer = .scheduledTimer(withTimeInterval: config.currentLocationFetchTimeOut, repeats: false) { [weak self] _ in
       Task { [weak self] in
         await self?.notify(.failure(LocationFetchError.noLocationFetchedInTime))
       }
@@ -346,7 +349,6 @@ public class GeoMonitor: NSObject, ObservableObject {
 
 // MARK: - Trigger on move
 
-@available(iOS 14.0, *)
 extension GeoMonitor {
   
   @discardableResult
@@ -379,11 +381,11 @@ extension GeoMonitor {
       center: location.coordinate,
       radius:
       // "In iOS 6, regions with a radius between 1 and 400 meters work better on iPhone 4S or later devices. "
-        min(Constants.currentLocationRegionMaximumRadius,
+        min(config.currentLocationRegionMaximumRadius,
       // "This property defines the largest boundary distance allowed from a region’s center point. Attempting to monitor a region with a distance larger than this value causes the location manager to send a CLError.Code.regionMonitoringFailure error to the delegate."
             min(self.locationManager.maximumRegionMonitoringDistance,
                 
-                location.horizontalAccuracy + Constants.currentLocationRegionRadiusDelta
+                location.horizontalAccuracy + config.currentLocationRegionRadiusDelta
                )
            ),
       identifier: "current-location"
@@ -406,7 +408,6 @@ extension GeoMonitor {
 
 // MARK: - Alert monitoring logic
 
-@available(iOS 14.0, *)
 extension GeoMonitor {
   
   private func monitorDebounced(_ regions: [CLCircularRegion], location: CLLocation?, delay: TimeInterval? = nil) {
@@ -440,7 +441,8 @@ extension GeoMonitor {
     let toMonitor = Self.determineRegionsToMonitor(
       regions: regions,
       location: currentLocation,
-      max: maxRegionsToMonitor - 1 // keep one for current location
+      max: maxRegionsToMonitor - 1, // keep one for current location
+      config: config
     )
     
     // Stop monitoring regions that are no irrelevant
@@ -464,7 +466,7 @@ extension GeoMonitor {
   }
 
   @MainActor
-  static func determineRegionsToMonitor(regions: [CLCircularRegion], location: CLLocation?, max: Int) -> [CLCircularRegion] {
+  static func determineRegionsToMonitor(regions: [CLCircularRegion], location: CLLocation?, max: Int, config: Config) -> [CLCircularRegion] {
     
     let processed: [(CLCircularRegion, distance: CLLocationDistance?, priority: Int?)] = regions.map { region in
       let distance = location.map { $0.distance(from: .init(latitude: region.center.latitude, longitude: region.center.longitude)) }
@@ -474,7 +476,7 @@ extension GeoMonitor {
     
     // Then effectively monitor the nearest
     let nearby = processed.filter { _, distance, _ in
-      (distance ?? 0) < Constants.maximumDistanceToRegionCenter
+      (distance ?? 0) < config.maximumDistanceToRegionCenter
     }
     
     // The ones to monitor, optionally pruned by either priority or the nearest
@@ -484,7 +486,7 @@ extension GeoMonitor {
 
     let prefix = nearby
       .sorted { lhs, rhs in
-        if let leftDistance = lhs.distance, let rightDistance = rhs.distance, leftDistance > Constants.maximumDistanceForPriorityPruningCenter || rightDistance > Constants.maximumDistanceForPriorityPruningCenter {
+        if let leftDistance = lhs.distance, let rightDistance = rhs.distance, leftDistance > config.maximumDistanceForPriorityPruningCenter || rightDistance > config.maximumDistanceForPriorityPruningCenter {
           return leftDistance < rightDistance
         } else if let leftPriority = lhs.priority, let rightPriority = rhs.priority, leftPriority != rightPriority {
           return leftPriority > rightPriority
@@ -500,8 +502,7 @@ extension GeoMonitor {
 
 // MARK: - CLLocationManagerDelegate
 
-@available(iOS 14.0, *)
-extension GeoMonitor: CLLocationManagerDelegate {
+extension GeoMonitor: @MainActor CLLocationManagerDelegate {
   
   public func locationManager(_ manager: CLLocationManager, didEnterRegion region: CLRegion) {
     dispatchPrecondition(condition: .onQueue(.main))
@@ -529,7 +530,7 @@ extension GeoMonitor: CLLocationManagerDelegate {
       
       do {
         let location = try await fetchCurrentLocation()
-        let minInterval = Constants.minIntervalBetweenEnteringSameRegion * -1
+        let minInterval = config.minIntervalBetweenEnteringSameRegion * -1
         if let lastReport = recentlyReportedRegionIdentifiers.first(where: { $0.0 == region.identifier }), lastReport.1.timeIntervalSinceNow >= minInterval {
           eventHandler(.status("GeoMonitor reported duplicate for \(region.identifier). Entered \(lastReport.1.timeIntervalSinceNow * -1) seconds ago.", .enteredRegion))
           return // Already reported with `minIntervalBetweenEnteringSameRegion`
@@ -643,7 +644,6 @@ extension GeoMonitor: CLLocationManagerDelegate {
 
 // MARK: - Helpers
 
-@available(iOS 14.0, *)
 private struct SimpleDataSource: GeoMonitorDataSource {
   let handler: (GeoMonitor.FetchTrigger) async -> [CLCircularRegion]
   
