@@ -3,7 +3,7 @@ import CoreLocation
 
 @testable import GeoMonitor
 
-@available(iOS 14.0, *)
+@MainActor
 final class GeoMonitorTests: XCTestCase {
   func testManyRegions() async throws {
     // This is an example of a functional test case.
@@ -106,14 +106,14 @@ final class GeoMonitorTests: XCTestCase {
 
     let needle = CLLocation(latitude: -31.9586, longitude: 115.8681)
 
-    let withoutLocation = await GeoMonitor.determineRegionsToMonitor(regions: regions, location: nil, max: 19)
+    let withoutLocation = GeoMonitor.determineRegionsToMonitor(regions: regions, location: nil, max: 19, config: .default)
     XCTAssertEqual(withoutLocation.count, 19)
     XCTAssertFalse(withoutLocation.allSatisfy { needle.distance(from: .init(latitude: $0.center.latitude, longitude: $0.center.longitude)) <= 5_000 })
     XCTAssertEqual(withoutLocation.compactMap { $0 as? PrioritizedRegion }.map(\.priority).min() ?? 0, 529) // highest priorities
     XCTAssertEqual(withoutLocation.compactMap { $0 as? PrioritizedRegion }.map(\.priority).max(), 900)
     XCTAssertEqual(withoutLocation.compactMap { $0 as? PrioritizedRegion }.filter { $0.priority == 900 }.count, 8) // all top priorities included
     
-    let withLocation = await GeoMonitor.determineRegionsToMonitor(regions: regions, location: needle, max: 19)
+    let withLocation = GeoMonitor.determineRegionsToMonitor(regions: regions, location: needle, max: 19, config: .default)
     XCTAssertEqual(withLocation.count, 19)
     XCTAssertTrue(withLocation.allSatisfy { needle.distance(from: .init(latitude: $0.center.latitude, longitude: $0.center.longitude)) <= 5_000 })
     XCTAssertEqual(withLocation.compactMap { $0 as? PrioritizedRegion }.map(\.priority).min() ?? 0, 349) // highest priorities
