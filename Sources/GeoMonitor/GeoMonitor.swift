@@ -438,15 +438,19 @@ extension GeoMonitor {
     
     let currentLocation = location ?? self.currentLocation
     
-    let toMonitor = Self.determineRegionsToMonitor(
+    let max = maxRegionsToMonitor - 1 // keep one for current location
+    let analyzed = Self.determineRegionsToMonitor(
       regions: regions,
       location: currentLocation,
-      max: maxRegionsToMonitor - 1, // keep one for current location
+      max: max,
       config: config
     )
+    let toMonitor = analyzed
+      .filter(\.keep)
+      .prefix(max)
     
     // Stop monitoring regions that are no irrelevant
-    let toMonitorIDs = Set(toMonitor.map(\.identifier))
+    let toMonitorIDs = Set(toMonitor.map(\.region.identifier))
     var removedCount: Int = 0
     for previous in locationManager.monitoredRegions {
       if !toMonitorIDs.contains(previous.identifier) && previous.identifier != "current-location" {
@@ -458,44 +462,53 @@ extension GeoMonitor {
     // Start monitoring those we need to monitor
     let monitoredAlready = locationManager.monitoredRegions.map(\.identifier)
     let newRegion = toMonitor
-      .filter { !monitoredAlready.contains($0.identifier) }
+      .filter { !monitoredAlready.contains($0.region.identifier) }
     newRegion
+      .map(\.region)
       .forEach(locationManager.startMonitoring(for:))
     
-    eventHandler(.status("Updating monitored regions. \(regions.count) candidates; monitoring \(toMonitor.count) regions; removed \(removedCount), kept \(monitoredAlready.count), added \(newRegion.count); now monitoring \(locationManager.monitoredRegions.count).", .updatingMonitoredRegions))
+    let furthestMonitored = toMonitor.compactMap(\.distance).max()
+    eventHandler(.status("Updating monitored regions. \(regions.count) candidates; monitoring \(toMonitor.count) regions; removed \(removedCount), kept \(monitoredAlready.count), added \(newRegion.count); now monitoring \(locationManager.monitoredRegions.count). Furthest is \(furthestMonitored ?? -1).", .updatingMonitoredRegions))
+  }
+  
+  struct AnalyzedRegion {
+    let region: CLCircularRegion
+    let distance: CLLocationDistance?
+    let priority: Int?
+    var keep: Bool
   }
 
   @MainActor
-  static func determineRegionsToMonitor(regions: [CLCircularRegion], location: CLLocation?, max: Int, config: Config) -> [CLCircularRegion] {
+  static func determineRegionsToMonitor(regions: [CLCircularRegion], location: CLLocation?, max: Int, config: Config) -> [AnalyzedRegion] {
     
-    let processed: [(CLCircularRegion, distance: CLLocationDistance?, priority: Int?)] = regions.map { region in
+    let processed: [AnalyzedRegion] = regions.map { region in
       let distance = location.map { $0.distance(from: .init(latitude: region.center.latitude, longitude: region.center.longitude)) }
       let priority = (region as? PrioritizedRegion)?.priority
-      return (region, distance: distance, priority: priority)
+      return .init(region: region, distance: distance, priority: priority, keep: true)
     }
     
     // Then effectively monitor the nearest
-    let nearby = processed.filter { _, distance, _ in
-      (distance ?? 0) < config.maximumDistanceToRegionCenter
+    let nearby = processed.map { analyzed in
+      var updated = analyzed
+      updated.keep = (analyzed.distance ?? 0) < config.maximumDistanceToRegionCenter
+      return updated
     }
     
     // The ones to monitor, optionally pruned by either priority or the nearest
-    guard nearby.count > max else {
-      return nearby.map(\.0)
+    guard nearby.count(where: \.keep) > max else {
+      return nearby
     }
 
-    let prefix = nearby
+    return nearby
       .sorted { lhs, rhs in
         if let leftDistance = lhs.distance, let rightDistance = rhs.distance, leftDistance > config.maximumDistanceForPriorityPruningCenter || rightDistance > config.maximumDistanceForPriorityPruningCenter {
           return leftDistance < rightDistance
         } else if let leftPriority = lhs.priority, let rightPriority = rhs.priority, leftPriority != rightPriority {
           return leftPriority > rightPriority
         } else {
-          return lhs.0.identifier < rhs.0.identifier
+          return lhs.region.identifier < rhs.region.identifier
         }
       }
-      .prefix(max)
-    return Array(prefix.map(\.0))
   }
   
 }
