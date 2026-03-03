@@ -5,6 +5,48 @@ import CoreLocation
 
 @MainActor
 final class GeoMonitorTests: XCTestCase {
+  func testShouldProcessForegroundNudge() {
+    let last = CLLocation(latitude: -31.95, longitude: 115.86)
+    let nearSoon = CLLocation(latitude: -31.9505, longitude: 115.8605)
+    let farSoon = CLLocation(latitude: -31.96, longitude: 115.87)
+
+    XCTAssertTrue(GeoMonitor.shouldProcessForegroundNudge(
+      lastLocation: nil,
+      lastDate: .distantPast,
+      location: nearSoon,
+      date: Date(),
+      minimumDistance: 400,
+      minimumInterval: 15
+    ))
+
+    XCTAssertFalse(GeoMonitor.shouldProcessForegroundNudge(
+      lastLocation: last,
+      lastDate: Date(),
+      location: nearSoon,
+      date: Date().addingTimeInterval(5),
+      minimumDistance: 400,
+      minimumInterval: 15
+    ))
+
+    XCTAssertTrue(GeoMonitor.shouldProcessForegroundNudge(
+      lastLocation: last,
+      lastDate: Date(),
+      location: farSoon,
+      date: Date().addingTimeInterval(5),
+      minimumDistance: 400,
+      minimumInterval: 15
+    ))
+
+    XCTAssertTrue(GeoMonitor.shouldProcessForegroundNudge(
+      lastLocation: last,
+      lastDate: Date(),
+      location: nearSoon,
+      date: Date().addingTimeInterval(20),
+      minimumDistance: 400,
+      minimumInterval: 15
+    ))
+  }
+
   func testManyRegions() async throws {
     // This is an example of a functional test case.
     // Use XCTAssert and related functions to verify your tests produce the correct
