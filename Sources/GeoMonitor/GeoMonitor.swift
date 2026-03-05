@@ -21,17 +21,23 @@ public class GeoMonitor: NSObject, ObservableObject {
   public struct Config: Sendable {
     public static let `default` = Config()
     
-    public var currentLocationRegionMaximumRadius: CLLocationDistance      = 2_500
-    public var currentLocationRegionRadiusDelta: CLLocationDistance        = 2_000
-    public var maximumDistanceToRegionCenter: CLLocationDistance           = 10_000
-    public var maximumDistanceForPriorityPruningCenter: CLLocationDistance = 5_000
-    public var currentLocationFetchTimeOut: TimeInterval                   = 30
-    public var currentLocationFetchRecency: TimeInterval                   = 10
-    public var minIntervalBetweenEnteringSameRegion: TimeInterval          = 120
+    public var currentLocationRegionMaximumRadius: CLLocationDistance       = 2_500
+    public var currentLocationRegionRadiusDelta: CLLocationDistance         = 2_000
+    public var maximumDistanceToRegionCenter: CLLocationDistance            = 10_000
+    public var maximumDistanceForPriorityPruningCenter: CLLocationDistance  = 5_000
+    public var currentLocationFetchTimeOut: TimeInterval                    = 30
+    public var currentLocationFetchRecency: TimeInterval                    = 10
+    public var minIntervalBetweenEnteringSameRegion: TimeInterval           = 120
+    public var foregroundNudgeMaximumHorizontalAccuracy: CLLocationAccuracy = 250
+    public var foregroundNudgeMinimumDistance: CLLocationDistance           = 150
+    public var foregroundNudgeMinimumInterval: TimeInterval                 = 5
+    public var foregroundContainmentAccuracyBuffer: CLLocationDistance      = 100
+    public var trackingDistanceFilter: CLLocationDistance                   = 100
   }
   
   public enum FetchTrigger: String, Sendable {
     case manual
+    case foreground
     case initial
     case visitMonitoring
     case regionMonitoring
@@ -51,6 +57,7 @@ public class GeoMonitor: NSObject, ObservableObject {
   public enum StatusKind {
     case updatingMonitoredRegions
     case updatedCurrentLocationRegion
+    case foregroundNudge
     case enteredRegion
     case visitMonitoring
     case stateChange
@@ -63,6 +70,9 @@ public class GeoMonitor: NSObject, ObservableObject {
     
     /// When user is currently in a region, triggered from calling `checkIfInRegion()`
     case manual(CLCircularRegion, CLLocation?)
+
+    /// When user is currently in a region, triggered by a live foreground location update.
+    case foreground(CLCircularRegion, CLLocation?)
 
     /// Internal status message, useful for debugging; should not be shown to user
     case status(String, StatusKind)
@@ -78,6 +88,28 @@ public class GeoMonitor: NSObject, ObservableObject {
   private var recentlyReportedRegionIdentifiers: [(String, Date)] = []
   
   private var monitorTask: Task<Void, Error>? = nil
+
+  private var lastForegroundNudgeLocation: CLLocation?
+  private var lastForegroundNudgeAt: Date = .distantPast
+
+  private enum ManualCheckSource {
+    case manual
+    case foreground
+
+    var context: String {
+      switch self {
+      case .manual: return "manual check"
+      case .foreground: return "foreground check"
+      }
+    }
+
+    var statusKind: StatusKind {
+      switch self {
+      case .manual: return .enteredRegion
+      case .foreground: return .foregroundNudge
+      }
+    }
+  }
 
   public var maxRegionsToMonitor = 20
   
@@ -205,7 +237,7 @@ public class GeoMonitor: NSObject, ObservableObject {
     didSet {
       if isTracking {
         locationManager.desiredAccuracy = kCLLocationAccuracyKilometer
-        locationManager.distanceFilter = 250
+        locationManager.distanceFilter = config.trackingDistanceFilter
         locationManager.startUpdatingLocation()
       } else {
         locationManager.stopUpdatingLocation()
@@ -341,20 +373,54 @@ public class GeoMonitor: NSObject, ObservableObject {
     let location = isMonitoring ? (try? await fetchCurrentLocation()) : nil
     monitorDebounced(regions, location: location)
   }
+
+  /// Use a live foreground location to fast-track monitor updates and region entry checks,
+  /// without waiting for Core Location region-enter callbacks.
+  public func handleForegroundLocationUpdate(_ location: CLLocation) async {
+    dispatchPrecondition(condition: .onQueue(.main))
+
+    guard isMonitoring else { return }
+    guard location.horizontalAccuracy >= 0, location.horizontalAccuracy <= config.foregroundNudgeMaximumHorizontalAccuracy else {
+      eventHandler(.status(
+        "GeoMonitor skipped foreground nudge due to accuracy \(location.horizontalAccuracy)m > \(config.foregroundNudgeMaximumHorizontalAccuracy)m.",
+        .foregroundNudge
+      ))
+      return
+    }
+
+    let now = Date()
+    guard Self.shouldProcessForegroundNudge(
+      lastLocation: lastForegroundNudgeLocation,
+      lastDate: lastForegroundNudgeAt,
+      location: location,
+      date: now,
+      minimumDistance: config.foregroundNudgeMinimumDistance,
+      minimumInterval: config.foregroundNudgeMinimumInterval
+    ) else {
+      let distance = lastForegroundNudgeLocation.map { location.distance(from: $0) } ?? 0
+      let elapsed = now.timeIntervalSince(lastForegroundNudgeAt)
+      eventHandler(.status(
+        "GeoMonitor skipped foreground nudge due to throttle. Distance \(distance)m in \(elapsed)s (needs \(config.foregroundNudgeMinimumDistance)m or \(config.foregroundNudgeMinimumInterval)s).",
+        .foregroundNudge
+      ))
+      return
+    }
+
+    lastForegroundNudgeLocation = location
+    lastForegroundNudgeAt = now
+
+    let regions = await fetchSource.fetchRegions(trigger: .foreground)
+    regionsToMonitor = regions
+    _ = monitorCurrentArea(using: location)
+    monitorDebounced(regions, location: location, delay: 0.5)
+    reportManualEventIfNeeded(location: location, source: .foreground)
+  }
   
   /// Trigger a check whether the user is in any of the registered regions and, if so, trigger the primary
   /// event handler (with case `.manual`).
   public func checkIfInRegion() async {
     guard let location = await runUpdateCycle(trigger: .manual) else { return }
-    
-    let candidates = regionsToMonitor.filter { $0.contains(location.coordinate) }
-    guard let closest = candidates.min(by: { lhs, rhs in
-      let lefty = location.distance(from: .init(latitude: lhs.center.latitude, longitude: lhs.center.longitude))
-      let righty = location.distance(from: .init(latitude: rhs.center.latitude, longitude: rhs.center.longitude))
-      return lefty < righty
-    }) else { return }
-    
-    eventHandler(.manual(closest, location))
+    reportManualEventIfNeeded(location: location, source: .manual)
   }
  
 }
@@ -380,14 +446,21 @@ extension GeoMonitor {
 
   func monitorCurrentArea() async throws -> CLLocation {
     dispatchPrecondition(condition: .onQueue(.main))
-    
+
     let location = try await fetchCurrentLocation()
+    _ = monitorCurrentArea(using: location)
+    return location
+  }
+
+  @discardableResult
+  func monitorCurrentArea(using location: CLLocation) -> Bool {
+    dispatchPrecondition(condition: .onQueue(.main))
 
     // Monitor a radius around it, using a single fixed "my location" circle
     if let previous = currentLocationRegion as? CLCircularRegion, previous.contains(location.coordinate) {
-      return location
+      return false
     }
-      
+
     // Monitor new region
     let region = CLCircularRegion(
       center: location.coordinate,
@@ -408,8 +481,8 @@ extension GeoMonitor {
     eventHandler(.status("GeoMonitor is monitoring \(MKDistanceFormatter().string(fromDistance: region.radius))...", .updatedCurrentLocationRegion))
 
     // ... continues in `didExitRegion`...
-    
-    return location
+
+    return true
   }
   
   func stopMonitoringCurrentArea() {
@@ -482,12 +555,96 @@ extension GeoMonitor {
     let furthestMonitored = toMonitor.compactMap(\.distance).max()
     eventHandler(.status("Updating monitored regions. \(regions.count) candidates; monitoring \(toMonitor.count) regions; removed \(removedCount), kept \(monitoredAlready.count), added \(newRegion.count); now monitoring \(locationManager.monitoredRegions.count). Furthest is \(furthestMonitored ?? -1).", .updatingMonitoredRegions))
   }
+
+  private func reportManualEventIfNeeded(location: CLLocation, source: ManualCheckSource) {
+    let accuracyBuffer = source == .foreground
+      ? max(0, min(location.horizontalAccuracy, config.foregroundContainmentAccuracyBuffer))
+      : 0
+
+    let candidates = regionsToMonitor.filter { region in
+      if region.contains(location.coordinate) {
+        return true
+      }
+
+      guard accuracyBuffer > 0 else {
+        return false
+      }
+
+      let distance = location.distance(from: .init(latitude: region.center.latitude, longitude: region.center.longitude))
+      return distance <= region.radius + accuracyBuffer
+    }
+
+    guard let closest = candidates.min(by: { lhs, rhs in
+      let lefty = location.distance(from: .init(latitude: lhs.center.latitude, longitude: lhs.center.longitude))
+      let righty = location.distance(from: .init(latitude: rhs.center.latitude, longitude: rhs.center.longitude))
+      return lefty < righty
+    }) else {
+      if let nearest = regionsToMonitor.min(by: { lhs, rhs in
+        let lefty = location.distance(from: .init(latitude: lhs.center.latitude, longitude: lhs.center.longitude))
+        let righty = location.distance(from: .init(latitude: rhs.center.latitude, longitude: rhs.center.longitude))
+        return lefty < righty
+      }) {
+        let nearestDistance = location.distance(from: .init(latitude: nearest.center.latitude, longitude: nearest.center.longitude))
+        let edgeDistance = max(0, nearestDistance - nearest.radius)
+        eventHandler(.status(
+          "GeoMonitor \(source.context) found no region containing current location. Closest: \(nearest.identifier), edge distance \(edgeDistance)m, location accuracy \(location.horizontalAccuracy)m, buffer \(accuracyBuffer)m.",
+          source.statusKind
+        ))
+      } else {
+        eventHandler(.status(
+          "GeoMonitor \(source.context) found no regions to evaluate.",
+          source.statusKind
+        ))
+      }
+      return
+    }
+
+    guard shouldReportRegion(identifier: closest.identifier, kind: source.statusKind, context: source.context) else {
+      return
+    }
+
+    switch source {
+    case .manual:
+      eventHandler(.manual(closest, location))
+    case .foreground:
+      eventHandler(.foreground(closest, location))
+    }
+  }
+
+  private func shouldReportRegion(identifier: String, kind: StatusKind, context: String) -> Bool {
+    let minInterval = config.minIntervalBetweenEnteringSameRegion * -1
+    if let lastReport = recentlyReportedRegionIdentifiers.first(where: { $0.0 == identifier }), lastReport.1.timeIntervalSinceNow >= minInterval {
+      eventHandler(.status("GeoMonitor skipped duplicate \(context) for \(identifier). Last was \(lastReport.1.timeIntervalSinceNow * -1) seconds ago.", kind))
+      return false
+    }
+
+    recentlyReportedRegionIdentifiers.append((identifier, Date()))
+    recentlyReportedRegionIdentifiers.removeAll { $0.1.timeIntervalSinceNow < minInterval }
+    return true
+  }
   
   struct AnalyzedRegion {
     let region: CLCircularRegion
     let distance: CLLocationDistance?
     let priority: Int?
     var keep: Bool
+  }
+
+  static func shouldProcessForegroundNudge(
+    lastLocation: CLLocation?,
+    lastDate: Date,
+    location: CLLocation,
+    date: Date,
+    minimumDistance: CLLocationDistance,
+    minimumInterval: TimeInterval
+  ) -> Bool {
+    guard let lastLocation else { return true }
+
+    let distance = location.distance(from: lastLocation)
+    let elapsed = date.timeIntervalSince(lastDate)
+
+    // Process if either a meaningful distance or time threshold has been crossed.
+    return distance >= minimumDistance || elapsed >= minimumInterval
   }
 
   @MainActor
@@ -567,17 +724,12 @@ extension GeoMonitor: @MainActor CLLocationManagerDelegate {
       
       eventHandler(.status("GeoMonitor entered -> \(region)", .enteredRegion))
       
+      guard shouldReportRegion(identifier: region.identifier, kind: .enteredRegion, context: "region enter") else {
+        return
+      }
+
       do {
         let location = try await fetchCurrentLocation()
-        let minInterval = config.minIntervalBetweenEnteringSameRegion * -1
-        if let lastReport = recentlyReportedRegionIdentifiers.first(where: { $0.0 == region.identifier }), lastReport.1.timeIntervalSinceNow >= minInterval {
-          eventHandler(.status("GeoMonitor reported duplicate for \(region.identifier). Entered \(lastReport.1.timeIntervalSinceNow * -1) seconds ago.", .enteredRegion))
-          return // Already reported with `minIntervalBetweenEnteringSameRegion`
-        }
-        
-        recentlyReportedRegionIdentifiers.append((region.identifier, Date()))
-        recentlyReportedRegionIdentifiers.removeAll { $0.1.timeIntervalSinceNow < minInterval }
-        
         eventHandler(.entered(match, location))
       } catch {
         eventHandler(.status("GeoMonitor location fetch failed after entering region -> \(error)", .failure))

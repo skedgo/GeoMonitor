@@ -8,6 +8,50 @@ import Testing
 struct GeoMonitorTests {
   @Test
   @MainActor
+  func shouldProcessForegroundNudge() {
+    let last = CLLocation(latitude: -31.95, longitude: 115.86)
+    let nearSoon = CLLocation(latitude: -31.9505, longitude: 115.8605)
+    let farSoon = CLLocation(latitude: -31.96, longitude: 115.87)
+
+    #expect(GeoMonitor.shouldProcessForegroundNudge(
+      lastLocation: nil,
+      lastDate: .distantPast,
+      location: nearSoon,
+      date: Date(),
+      minimumDistance: 400,
+      minimumInterval: 15
+    ))
+
+    #expect(!GeoMonitor.shouldProcessForegroundNudge(
+      lastLocation: last,
+      lastDate: Date(),
+      location: nearSoon,
+      date: Date().addingTimeInterval(5),
+      minimumDistance: 400,
+      minimumInterval: 15
+    ))
+
+    #expect(GeoMonitor.shouldProcessForegroundNudge(
+      lastLocation: last,
+      lastDate: Date(),
+      location: farSoon,
+      date: Date().addingTimeInterval(5),
+      minimumDistance: 400,
+      minimumInterval: 15
+    ))
+
+    #expect(GeoMonitor.shouldProcessForegroundNudge(
+      lastLocation: last,
+      lastDate: Date(),
+      location: nearSoon,
+      date: Date().addingTimeInterval(20),
+      minimumDistance: 400,
+      minimumInterval: 15
+    ))
+  }
+
+  @Test
+  @MainActor
   func manyRegions() {
     let regions: [PrioritizedRegion] = [
       .init(-31.959492, 115.87516, 900, 400),
